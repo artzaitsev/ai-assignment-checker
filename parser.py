@@ -8,6 +8,10 @@ from typing import Tuple, Union, List, Dict
 import pandas as pd
 from docx import Document
 
+import pytesseract
+
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
 # PDF
 try:
     import pdfplumber
