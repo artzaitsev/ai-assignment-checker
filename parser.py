@@ -149,11 +149,12 @@ def _read_image_ocr(path: Path, lang: str, tesseract_cmd: Optional[str]) -> str:
     return pytesseract.image_to_string(img, lang=lang)
 
 
-def _read_any(path: Path, ocr_lang: str, tesseract_cmd: Optional[str]) -> Tuple[str, str]:
-    ext = path.suffix.lower()
+def _read_any(path: Path, ocr_lang: str = "rus+eng", tesseract_cmd: Optional[str] = None) -> Tuple[str, str]:
+    ext = path.suffix.lower().strip()
+
     if ext in _TEXT_EXT:
         return _read_text_file(path), "text"
-    if ext in _DOCX_EXT:
+    if ext == ".docx":
         return _read_docx(path), "docx"
     if ext in _PDF_EXT:
         return _read_pdf(path), "pdf"
@@ -161,7 +162,10 @@ def _read_any(path: Path, ocr_lang: str, tesseract_cmd: Optional[str]) -> Tuple[
         return _read_excel(path), "excel"
     if ext in _IMG_EXT:
         return _read_image_ocr(path, lang=ocr_lang, tesseract_cmd=tesseract_cmd), "ocr"
-    raise RuntimeError(f"Unsupported extension: {ext}")
+    if ext == "":
+        return _read_text_file(path), "text"
+
+    raise RuntimeError(f"Unsupported extension: {ext} (file={path.name})")
 
 
 def zip_answers_to_df(
