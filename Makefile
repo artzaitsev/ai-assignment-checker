@@ -1,6 +1,9 @@
 test:
 	uv run pytest
 
+typecheck:
+	uv run basedpyright
+
 test-unit:
 	uv run pytest -m unit
 

@@ -8,9 +8,10 @@ import uuid
 
 import uvicorn
 
-from app.http_app import build_app
+from app.api.http_app import build_app
 from app.logging_setup import configure_logging
 from app.roles import SUPPORTED_ROLES, validate_role
+from app.services.bootstrap import build_runtime_container
 
 
 def _default_port(role: str) -> int:
@@ -29,7 +30,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Validate startup and exit",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable code reload (dev mode)",
+    )
     return parser.parse_args(argv)
+
+
+def create_runtime_app() -> object:
+    role_name = os.getenv("APP_ROLE", "api")
+    role = validate_role(role_name)
+    run_id = str(uuid.uuid4())
+    configure_logging()
+    container = build_runtime_container(role)
+    return build_app(
+        role=role.name,
+        run_id=run_id,
+        worker_loop=container.worker_loop,
+        api_deps=container.api_deps,
+    )
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -59,9 +79,26 @@ def run(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    container = build_runtime_container(role)
     port = args.port if args.port is not None else _default_port(role.name)
-    app = build_app(role=role.name, run_id=run_id)
-    uvicorn.run(app, host=args.host, port=port, log_level="warning")
+    if args.reload:
+        os.environ["APP_ROLE"] = role.name
+        uvicorn.run(
+            "app.main:create_runtime_app",
+            host=args.host,
+            port=port,
+            log_level="warning",
+            reload=True,
+            factory=True,
+        )
+    else:
+        app = build_app(
+            role=role.name,
+            run_id=run_id,
+            worker_loop=container.worker_loop,
+            api_deps=container.api_deps,
+        )
+        uvicorn.run(app, host=args.host, port=port, log_level="warning")
     return 0
 
 

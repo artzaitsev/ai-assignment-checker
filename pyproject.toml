@@ -5,14 +5,24 @@ description = "Runtime and orchestration baseline for AI assignment checker"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116.0,<1.0.0",
+  "python-multipart>=0.0.20,<1.0.0",
   "uvicorn>=0.35.0,<1.0.0",
 ]
 
 [dependency-groups]
 dev = [
+  "basedpyright>=1.31.0,<2.0.0",
   "pytest>=8.4.0,<9.0.0",
   "pyyaml>=6.0.0,<7.0.0",
+  "httpx>=0.28.0,<1.0.0",
 ]
+
+[tool.basedpyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+include = ["app", "tests"]
+exclude = [".venv", "**/__pycache__"]
+reportMissingTypeStubs = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
