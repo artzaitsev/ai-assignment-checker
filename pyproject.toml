@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Runtime and orchestration baseline for AI assignment checker"
 requires-python = ">=3.12"
 dependencies = [
+  "asyncpg>=0.30.0,<1.0.0",
   "fastapi>=0.116.0,<1.0.0",
+  "ulid-py>=1.1.0,<2.0.0",
   "python-multipart>=0.0.20,<1.0.0",
   "uvicorn>=0.35.0,<1.0.0",
 ]

@@ -7,17 +7,17 @@ from app.workers.loop import ProcessHandler
 
 
 def build_process_handler(role: str, deps: WorkerDeps) -> ProcessHandler:
-    def _ingest(claim: WorkItemClaim) -> ProcessResult:
-        return ingest_telegram.process_claim(claim, deps)
+    async def _ingest(claim: WorkItemClaim) -> ProcessResult:
+        return await ingest_telegram.process_claim(claim, deps)
 
-    def _normalize(claim: WorkItemClaim) -> ProcessResult:
-        return normalize.process_claim(claim, deps)
+    async def _normalize(claim: WorkItemClaim) -> ProcessResult:
+        return await normalize.process_claim(claim, deps)
 
-    def _evaluate(claim: WorkItemClaim) -> ProcessResult:
-        return evaluate.process_claim(claim, deps)
+    async def _evaluate(claim: WorkItemClaim) -> ProcessResult:
+        return await evaluate.process_claim(claim, deps)
 
-    def _deliver(claim: WorkItemClaim) -> ProcessResult:
-        return deliver.process_claim(claim, deps)
+    async def _deliver(claim: WorkItemClaim) -> ProcessResult:
+        return await deliver.process_claim(claim, deps)
 
     handlers: dict[str, ProcessHandler] = {
         "worker-ingest-telegram": _ingest,

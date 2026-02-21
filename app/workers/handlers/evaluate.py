@@ -8,7 +8,7 @@ from app.workers.handlers.deps import WorkerDeps
 COMPONENT_ID = "worker.evaluate.process_claim"
 
 
-def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
+async def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
     """Here you can implement production business logic for worker.evaluate.process_claim."""
     result = evaluate_submission(
         EvaluateSubmissionCommand(

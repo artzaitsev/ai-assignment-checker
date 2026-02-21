@@ -5,6 +5,9 @@ Use these component IDs in implementation tasks.
 ## API
 
 - `api.create_submission` -> `app/api/handlers/submissions.py`
+- `api.create_candidate` -> `app/api/handlers/candidates.py`
+- `api.create_assignment` -> `app/api/handlers/assignments.py`
+- `api.list_assignments` -> `app/api/handlers/assignments.py`
 - `api.get_submission_status` -> `app/api/handlers/status.py`
 - `api.list_feedback` -> `app/api/handlers/feedback.py`
 - `api.export_results` -> `app/api/handlers/exports.py`

@@ -49,6 +49,8 @@ def create_runtime_app() -> object:
         run_id=run_id,
         worker_loop=container.worker_loop,
         api_deps=container.api_deps,
+        on_startup=container.on_startup,
+        on_shutdown=container.on_shutdown,
     )
 
 
@@ -97,6 +99,8 @@ def run(argv: list[str] | None = None) -> int:
             run_id=run_id,
             worker_loop=container.worker_loop,
             api_deps=container.api_deps,
+            on_startup=container.on_startup,
+            on_shutdown=container.on_shutdown,
         )
         uvicorn.run(app, host=args.host, port=port, log_level="warning")
     return 0

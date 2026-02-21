@@ -9,6 +9,8 @@ This repository provides a runtime and orchestration baseline:
 - Docker Compose baseline with external one-shot migrator
 - Local non-Docker runtime contract using `uv` and `.venv`
 - Layered skeleton with interface-first repository/client contracts
+- Persistence-backed onboarding contracts for candidates and assignments
+- OpenAPI/Swagger request/response contracts with typed Pydantic schemas
 
 ## Layered Architecture
 
@@ -16,7 +18,7 @@ This repository provides a runtime and orchestration baseline:
 - `app/services`: dependency wiring/bootstrap
 - `app/workers`: claim/process/finalize skeleton loop
 - `app/domain`: shared contracts and models
-- `app/repositories`: repository adapter stubs
+- `app/repositories`: asyncpg Postgres adapter + in-memory deterministic stub
 - `app/clients`: external client stubs
 
 Dependency direction: `api/services/workers -> domain contracts`, with infrastructure wired at bootstrap. See `app/ARCHITECTURE.md`.
@@ -32,11 +34,32 @@ Readiness now includes worker-loop status and counters via `/ready`:
 
 Synthetic in-process pipeline checks are available for infrastructure verification:
 
-- `POST /submissions/file` accepts a file and stores a `raw/` artifact via stubs.
+- `POST /submissions/file` accepts a file plus `candidate_public_id` and `assignment_public_id`, then stores a `raw/` artifact.
 - `POST /internal/test/run-pipeline` runs normalize -> evaluate -> deliver handler chain for the submission.
 - `GET /submissions/{id}` returns current state, transitions, and artifact refs for test submissions.
 
+Artifact refs are internal storage references (`stub://...` in skeleton mode), not public download URLs.
+
+Current API onboarding flow:
+
+- `POST /candidates` creates or reuses candidate identity mapping.
+- `POST /assignments` creates assignment metadata.
+- `GET /assignments` lists assignments (active by default).
+- `POST /submissions` requires `candidate_public_id` and `assignment_public_id`.
+
+Public ID contracts:
+
+- candidate: `cand_<ULID>`
+- assignment: `asg_<ULID>`
+- submission: `sub_<ULID>`
+
+Internal database primary keys remain `BIGSERIAL`; public IDs are external API-facing identifiers.
+
+Swagger/OpenAPI is available from FastAPI defaults (`/docs`, `/openapi.json`) and is treated as the HTTP contract source.
+
 Note: this synthetic flow is intentionally in-process and does not model shared persistence across separate Compose services yet.
+
+Dead-letter processing is not implemented yet; `dead_letter` currently acts as a terminal persistence state.
 
 ## Runtime Roles
 
@@ -72,6 +95,8 @@ Worker polling tuning (optional):
 - `WORKER_POLL_INTERVAL_MS` (default: `200`)
 - `WORKER_IDLE_BACKOFF_MS` (default: `1000`)
 - `WORKER_ERROR_BACKOFF_MS` (default: `2000`)
+- `WORKER_CLAIM_LEASE_SECONDS` (default: `30`)
+- `WORKER_HEARTBEAT_INTERVAL_MS` (default: `10000`)
 
 Run local role smoke checks:
 

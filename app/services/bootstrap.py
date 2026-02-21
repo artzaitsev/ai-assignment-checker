@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import os
 
 from app.api.handlers.deps import ApiDeps
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.domain.contracts import LLMClient, StorageClient, TelegramClient, WorkRepository
+from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from app.repositories.stub import InMemoryWorkRepository
 from app.roles import RuntimeRole
 from app.workers.handlers.deps import WorkerDeps
@@ -21,10 +24,21 @@ class RuntimeContainer:
     llm: LLMClient
     api_deps: ApiDeps
     worker_loop: WorkerLoop | None
+    on_startup: Callable[[], Awaitable[None]] | None
+    on_shutdown: Callable[[], Awaitable[None]] | None
 
 
 def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
-    repository = InMemoryWorkRepository()
+    database_url = os.getenv("DATABASE_URL")
+    on_startup: Callable[[], Awaitable[None]] | None = None
+    on_shutdown: Callable[[], Awaitable[None]] | None = None
+    if database_url:
+        pool_manager = AsyncpgPoolManager(dsn=database_url)
+        repository = PostgresWorkRepository(pool_manager=pool_manager)
+        on_startup = pool_manager.startup
+        on_shutdown = pool_manager.shutdown
+    else:
+        repository = InMemoryWorkRepository()
     storage = StubStorageClient()
     telegram = StubTelegramClient()
     llm = StubLLMClient()
@@ -53,4 +67,6 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
         llm=llm,
         api_deps=api_deps,
         worker_loop=worker_loop,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
     )

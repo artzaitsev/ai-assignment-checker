@@ -42,7 +42,7 @@ Entrypoint: `app/main.py`
 
 - `app/repositories`
   - Persistence adapters implementing domain repository contracts.
-  - Currently in-memory stubs.
+  - Includes asyncpg Postgres adapter and in-memory deterministic stub.
 
 - `app/clients`
   - External integration adapters (storage, Telegram, LLM).
@@ -73,6 +73,9 @@ Current key routes:
 
 - `GET /health`
 - `GET /ready`
+- `POST /candidates`
+- `POST /assignments`
+- `GET /assignments`
 - `POST /submissions`
 - `GET /submissions/{submission_id}`
 - `POST /submissions/file` (synthetic infra check)
@@ -86,20 +89,15 @@ Current key routes:
 - Each tick calls `WorkerLoop.run_once()` from `app/workers/loop.py`.
 - `run_once()` lifecycle:
   1. `claim_next(...)`
-  2. `transition_state(...)`
-  3. `process(claim)` (role handler)
-  4. optional `link_artifact(...)`
-  5. `finalize(...)`
+  2. `process(claim)` (role handler)
+  3. optional `link_artifact(...)`
+  4. `finalize(...)`
 
 Why each step exists:
 
 - `claim_next(...)`
   - Select one eligible work item for the current stage.
   - Prevent two workers from processing the same item at the same time.
-
-- `transition_state(...)`
-  - Mark the item as "in progress" for this stage before heavy work starts.
-  - Makes ownership visible in state/history and reduces duplicate processing risk.
 
 - `process(claim)`
   - Execute stage-specific business behavior (normalize/evaluate/deliver/etc).
@@ -108,14 +106,29 @@ Why each step exists:
 - `link_artifact(...)` (optional)
   - Persist artifact reference/version when stage produced output.
   - Optional because some stages may only change state and not create artifacts.
+  - Artifact trace keys are documented in `app/domain/artifacts.py`.
+  - Most keys map 1:1 to stages, but `llm-output` stage can also produce `feedback`.
 
 - `finalize(...)`
   - Record final outcome of the stage attempt (success/failure + detail).
   - This is the terminal step for a single claim attempt and is used by retries/next-stage logic.
 
+Lease behavior for long-running handlers:
+
+- Runtime periodically calls `reclaim_expired_claims(stage=...)` before each worker tick.
+- `WorkerLoop` starts a heartbeat while `process(claim)` runs and extends claim lease via `heartbeat_claim(...)`.
+- If lease ownership is lost mid-process, the tick fails with stale-claim error and does not commit success.
+
+Dead-letter handling (current limitation):
+
+- `dead_letter` is currently a terminal persistence state only.
+- Runtime transitions work items to `dead_letter` after max-attempt failures or expired-lease reclaim.
+- There is currently no dedicated dead-letter processing flow (triage/requeue/alerting API or worker).
+- Production rollout should include operational dead-letter handling before relying on retries-only behavior.
+
 Execution order matters:
 
-- Claim first, then transition, then process, then finalize.
+- Claim first, then process, then finalize.
 - If `process` fails, `finalize` still records failure context (via exception path in higher-level runner/retry policy).
 - Keep `process` deterministic and idempotent where possible; retries may re-run the same logical task.
 
@@ -129,8 +142,6 @@ WorkerLoop.run_once()
    |
    +--> repository.claim_next(stage, worker_id)
    |      -> WorkItemClaim | None
-   |
-   +--> repository.transition_state(item, from, to_in_progress)
    |
    +--> role_handler.process(claim)
    |      -> ProcessResult(success, detail, artifact_ref?, artifact_version?)
@@ -218,8 +229,13 @@ Do:
 
 ```python
 @app.post("/submissions")
-async def create_submission(payload: dict[str, str] = Body(default={})):
-    return await create_submission_handler(source_external_id=payload.get("source_external_id", "skeleton"))
+async def create_submission(payload: CreateSubmissionRequest):
+    return await create_submission_with_candidate_handler(
+        source_external_id=payload.source_external_id,
+        candidate_public_id=payload.candidate_public_id,
+        assignment_public_id=payload.assignment_public_id,
+        api_deps=api_deps,
+    )
 ```
 
 Don't:

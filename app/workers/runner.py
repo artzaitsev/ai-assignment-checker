@@ -13,6 +13,8 @@ class WorkerRuntimeSettings:
     poll_interval_ms: int = 200
     idle_backoff_ms: int = 1000
     error_backoff_ms: int = 2000
+    claim_lease_seconds: int = 30
+    heartbeat_interval_ms: int = 10000
 
 
 @dataclass
@@ -30,6 +32,8 @@ def worker_runtime_settings_from_env() -> WorkerRuntimeSettings:
         poll_interval_ms=_env_int("WORKER_POLL_INTERVAL_MS", 200),
         idle_backoff_ms=_env_int("WORKER_IDLE_BACKOFF_MS", 1000),
         error_backoff_ms=_env_int("WORKER_ERROR_BACKOFF_MS", 2000),
+        claim_lease_seconds=_env_int("WORKER_CLAIM_LEASE_SECONDS", 30),
+        heartbeat_interval_ms=_env_int("WORKER_HEARTBEAT_INTERVAL_MS", 10000),
     )
 
 
@@ -56,6 +60,10 @@ async def run_worker_until_stopped(
     logger: logging.Logger,
     state: WorkerRuntimeState | None = None,
 ) -> None:
+    if isinstance(worker_loop, WorkerLoop):
+        worker_loop.claim_lease_seconds = settings.claim_lease_seconds
+        worker_loop.heartbeat_interval_ms = settings.heartbeat_interval_ms
+
     if state is not None:
         state.started = True
 
@@ -67,7 +75,9 @@ async def run_worker_until_stopped(
     while not stop_event.is_set():
         delay_ms = settings.idle_backoff_ms
         try:
-            did_work = worker_loop.run_once()
+            if isinstance(worker_loop, WorkerLoop):
+                await worker_loop.repository.reclaim_expired_claims(stage=worker_loop.stage)
+            did_work = await worker_loop.run_once()
             if state is not None:
                 state.ticks_total += 1
                 if did_work:
