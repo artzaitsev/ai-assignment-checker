@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from app.api.http_app import build_app
 from app.roles import validate_role
 from app.services.bootstrap import build_runtime_container
+from tests.integration.api_seed import seed_candidate_and_assignment
 
 
 @pytest.mark.integration
@@ -18,9 +19,15 @@ def test_file_upload_and_synthetic_pipeline_end_to_end() -> None:
     )
 
     with TestClient(app) as client:
+        candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+
         upload_response = client.post(
             "/submissions/file",
-            files={"file": ("task.txt", b"print('hello')", "text/plain")},
+            files={
+                "file": ("task.txt", b"print('hello')", "text/plain"),
+                "candidate_public_id": (None, candidate_public_id),
+                "assignment_public_id": (None, assignment_public_id),
+            },
         )
         assert upload_response.status_code == 200
 

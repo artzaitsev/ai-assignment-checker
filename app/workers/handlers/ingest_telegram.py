@@ -6,7 +6,7 @@ from app.workers.handlers.deps import WorkerDeps
 COMPONENT_ID = "worker.ingest_telegram.process_claim"
 
 
-def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
+async def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
     """Here you can implement production business logic for worker.ingest_telegram.process_claim."""
     updates = deps.telegram.poll_updates()
     del updates

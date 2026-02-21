@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.api.handlers import exports, feedback, status, submissions
+from app.api.handlers import assignments, candidates, exports, feedback, status, submissions
 from app.api.handlers.deps import ApiDeps
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
@@ -18,6 +18,9 @@ def test_api_handler_component_ids_are_stable() -> None:
     assert status.COMPONENT_ID == "api.get_submission_status"
     assert feedback.COMPONENT_ID == "api.list_feedback"
     assert exports.COMPONENT_ID == "api.export_results"
+    assert candidates.COMPONENT_ID == "api.create_candidate"
+    assert assignments.COMPONENT_ID_CREATE == "api.create_assignment"
+    assert assignments.COMPONENT_ID_LIST == "api.list_assignments"
 
 
 @pytest.mark.unit
@@ -34,13 +37,16 @@ def test_handlers_execute_skeleton_flow() -> None:
     deps = WorkerDeps(storage=storage, telegram=StubTelegramClient(), llm=StubLLMClient())
     claim = WorkItemClaim(item_id="s-1", stage="llm-output", attempt=1)
 
-    evaluate_result = evaluate.process_claim(claim, deps)
-    deliver_result = deliver.process_claim(claim, deps)
+    async def _run() -> None:
+        evaluate_result = await evaluate.process_claim(claim, deps)
+        deliver_result = await deliver.process_claim(claim, deps)
 
-    assert evaluate_result.success is True
-    assert evaluate_result.artifact_ref is not None
-    assert deliver_result.success is True
-    assert deliver_result.artifact_ref is not None
+        assert evaluate_result.success is True
+        assert evaluate_result.artifact_ref is not None
+        assert deliver_result.success is True
+        assert deliver_result.artifact_ref is not None
+
+    asyncio.run(_run())
 
 
 @pytest.mark.unit
@@ -51,7 +57,7 @@ def test_export_handler_uses_storage_contract() -> None:
             feedback_ref="feedback/sub-1.json",
             storage=StubStorageClient(),
         )
-        assert result["export_ref"].startswith("stub://exports/")
+        assert result.export_ref.startswith("stub://exports/")
 
     asyncio.run(_run())
 

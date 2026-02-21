@@ -9,6 +9,8 @@ from app.domain.contracts import LLMClient, StorageClient, TelegramClient, WorkR
 class SubmissionRecord:
     submission_id: str
     state: str
+    candidate_public_id: str | None = None
+    assignment_public_id: str | None = None
     transitions: list[str] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)
 
