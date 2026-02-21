@@ -1,0 +1,359 @@
+# Architecture Layer Boundaries
+
+This document explains how the runtime is organized, where business logic should live, and where to make changes safely.
+
+## 1) Runtime Overview
+
+Entrypoint: `app/main.py`
+
+- The process starts with `--role`.
+- Supported roles:
+  - `api`
+  - `worker-ingest-telegram`
+  - `worker-normalize`
+  - `worker-evaluate`
+  - `worker-deliver`
+- `migrator` is external (one-shot service) and not an app role.
+
+`app/main.py` validates role, builds dependencies via `app/services/bootstrap.py`, and starts FastAPI app from `app/api/http_app.py`.
+
+## 2) Layers and Responsibilities
+
+- `app/api`
+  - HTTP transport only (routes, request/response mapping, readiness/health).
+  - Calls handlers in `app/api/handlers`.
+  - Should not contain core business rules.
+
+- `app/services`
+  - Dependency wiring/bootstrap.
+  - Builds runtime container and injects contracts/adapters.
+
+- `app/workers`
+  - Worker orchestration:
+    - polling runner
+    - claim/process/finalize loop
+    - role-to-handler mapping
+  - Stage-specific process handlers live in `app/workers/handlers`.
+
+- `app/domain`
+  - Core contracts, DTOs, models, use-cases.
+  - Main place for production business logic.
+  - Must not import transport/framework/SDK-specific modules.
+
+- `app/repositories`
+  - Persistence adapters implementing domain repository contracts.
+  - Currently in-memory stubs.
+
+- `app/clients`
+  - External integration adapters (storage, Telegram, LLM).
+  - Currently non-network stubs.
+
+## 3) Dependency Direction (Strict Rule)
+
+Direction must remain:
+
+`api/services/workers -> domain contracts`
+
+And:
+
+- `repositories` and `clients` implement domain contracts.
+- `domain` must not depend on `api`, `workers`, FastAPI, Uvicorn, provider SDKs, or DB drivers.
+- `workers/services` should use interfaces, not concrete infrastructure imports in business code.
+
+## 4) Request and Worker Flows
+
+### API flow (role: `api`)
+
+- Routes are defined in `app/api/http_app.py`.
+- Routes call handler functions from `app/api/handlers/*`.
+- Handlers call domain use-cases (or stubs for now).
+- Responses are mapped back to HTTP JSON.
+
+Current key routes:
+
+- `GET /health`
+- `GET /ready`
+- `POST /submissions`
+- `GET /submissions/{submission_id}`
+- `POST /submissions/file` (synthetic infra check)
+- `GET /feedback`
+- `POST /exports`
+- `POST /internal/test/run-pipeline` (synthetic infra check)
+
+### Worker flow (worker-* roles)
+
+- `app/workers/runner.py` runs background polling loop.
+- Each tick calls `WorkerLoop.run_once()` from `app/workers/loop.py`.
+- `run_once()` lifecycle:
+  1. `claim_next(...)`
+  2. `transition_state(...)`
+  3. `process(claim)` (role handler)
+  4. optional `link_artifact(...)`
+  5. `finalize(...)`
+
+Why each step exists:
+
+- `claim_next(...)`
+  - Select one eligible work item for the current stage.
+  - Prevent two workers from processing the same item at the same time.
+
+- `transition_state(...)`
+  - Mark the item as "in progress" for this stage before heavy work starts.
+  - Makes ownership visible in state/history and reduces duplicate processing risk.
+
+- `process(claim)`
+  - Execute stage-specific business behavior (normalize/evaluate/deliver/etc).
+  - Returns `ProcessResult` with success flag, detail, and optional artifact metadata.
+
+- `link_artifact(...)` (optional)
+  - Persist artifact reference/version when stage produced output.
+  - Optional because some stages may only change state and not create artifacts.
+
+- `finalize(...)`
+  - Record final outcome of the stage attempt (success/failure + detail).
+  - This is the terminal step for a single claim attempt and is used by retries/next-stage logic.
+
+Execution order matters:
+
+- Claim first, then transition, then process, then finalize.
+- If `process` fails, `finalize` still records failure context (via exception path in higher-level runner/retry policy).
+- Keep `process` deterministic and idempotent where possible; retries may re-run the same logical task.
+
+Sequence sketch:
+
+```text
+runner tick
+   |
+   v
+WorkerLoop.run_once()
+   |
+   +--> repository.claim_next(stage, worker_id)
+   |      -> WorkItemClaim | None
+   |
+   +--> repository.transition_state(item, from, to_in_progress)
+   |
+   +--> role_handler.process(claim)
+   |      -> ProcessResult(success, detail, artifact_ref?, artifact_version?)
+   |
+   +--> [if artifact_ref] repository.link_artifact(...)
+   |
+   +--> repository.finalize(item, stage, success, detail)
+   |
+   +--> return did_work=True
+
+If claim_next returns None -> return did_work=False (idle/backoff path in runner).
+```
+
+Role handler mapping is in `app/workers/handlers/factory.py`.
+
+## 5) Skeleton Mode (Current State)
+
+- Adapters are stubs, no real network calls.
+- Worker roles run continuous background polling loop.
+- `/ready` includes worker runtime state and counters:
+  - `worker_loop_enabled`
+  - `worker_loop_ready`
+  - `worker_metrics`:
+    - `ticks_total`
+    - `claims_total`
+    - `idle_ticks_total`
+    - `errors_total`
+
+Runner tuning via env:
+
+- `WORKER_POLL_INTERVAL_MS` (default `200`)
+- `WORKER_IDLE_BACKOFF_MS` (default `1000`)
+- `WORKER_ERROR_BACKOFF_MS` (default `2000`)
+
+## 6) Where to Implement New Logic
+
+Use `app/COMPONENTS.md` as source of truth for component IDs and file targets.
+
+### If you add a new API business feature
+
+1. Add/adjust route in `app/api/http_app.py`.
+2. Implement handler in `app/api/handlers/*`.
+3. Put real business rules into `app/domain/use_cases/*`.
+4. Inject dependencies through `app/services/bootstrap.py`.
+5. Add unit tests and integration tests.
+
+### If you add a new worker stage behavior
+
+1. Implement stage logic in `app/workers/handlers/<stage>.py`.
+2. Keep orchestration generic in `app/workers/loop.py`.
+3. Keep polling behavior in `app/workers/runner.py`.
+4. Add domain logic in `app/domain/use_cases/*`.
+5. Wire new dependencies through `app/services/bootstrap.py`.
+
+### If you add real external integration
+
+1. Define/extend contract in `app/domain/contracts.py`.
+2. Implement adapter in `app/clients/*` or `app/repositories/*`.
+3. Wire implementation in `app/services/bootstrap.py`.
+4. Do not call SDK/DB directly from domain use-cases.
+
+## 7) PR Readiness Checklist
+
+Use this checklist before opening a PR:
+
+- [ ] Business logic lives in `app/domain/use_cases/*`, not in route/transport code.
+- [ ] Dependency direction remains valid (`api/services/workers -> domain contracts`).
+- [ ] `COMPONENT_ID` values and mappings in `app/COMPONENTS.md` are updated if behavior changed.
+- [ ] Unit tests cover logic/contracts changes.
+- [ ] Integration tests cover runtime/wiring path changes.
+- [ ] If a new role was added, role/stage/handler/compose/test matrices are all updated.
+- [ ] `make test`, `make test-unit`, `make test-integration`, and `make typecheck` pass.
+
+## 8) Synthetic End-to-End Note
+
+`POST /submissions/file` and `POST /internal/test/run-pipeline` are for infrastructure verification only.
+
+They validate that routing, handlers, wiring, and stage sequencing work together in-process, without requiring real persistence/integrations.
+
+## 9) Common Mistakes
+
+### 9.1 Business logic in routes instead of domain use-cases
+
+Do:
+
+```python
+@app.post("/submissions")
+async def create_submission(payload: dict[str, str] = Body(default={})):
+    return await create_submission_handler(source_external_id=payload.get("source_external_id", "skeleton"))
+```
+
+Don't:
+
+```python
+@app.post("/submissions")
+async def create_submission(payload: dict[str, str] = Body(default={})):
+    # business rule directly in transport layer
+    score = int(payload["score"])
+    if score > 7:
+        return {"result": "pass"}
+    return {"result": "fail"}
+```
+
+### 9.2 Domain depending on concrete adapters
+
+Do:
+
+```python
+def evaluate_submission(cmd: EvaluateSubmissionCommand, *, llm: LLMClient, storage: StorageClient) -> EvaluateSubmissionResult:
+    ...
+```
+
+Don't:
+
+```python
+from app.clients.stub import StubLLMClient
+
+def evaluate_submission(cmd: EvaluateSubmissionCommand) -> EvaluateSubmissionResult:
+    llm = StubLLMClient()
+    ...
+```
+
+### 9.3 Stage-specific behavior in generic worker loop
+
+Do:
+
+```python
+def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
+    # worker.evaluate.process_claim
+    ...
+```
+
+Don't:
+
+```python
+def run_once(self) -> bool:
+    ...
+    if self.role == "worker-evaluate":
+        # stage-specific logic in generic orchestration
+        ...
+```
+
+### 9.4 Transport-specific types leaked into domain
+
+Do:
+
+```python
+@dataclass(frozen=True)
+class PrepareExportResult:
+    export_ref: str
+```
+
+Don't:
+
+```python
+from fastapi.responses import JSONResponse
+
+def prepare_export(...) -> JSONResponse:
+    return JSONResponse({"ok": True})
+```
+
+### 9.5 Missing component map and tests after changes
+
+Do:
+
+```text
+1. Update app/COMPONENTS.md with new/changed component IDs.
+2. Add/adjust unit + integration tests.
+```
+
+Don't:
+
+```text
+Ship new behavior without updating component map or tests.
+```
+
+## 10) Implementation Playbook
+
+Use this flow for new behavior:
+
+1. Scope the change
+   - Select a component from `app/COMPONENTS.md` (for example `worker.evaluate.process_claim`).
+   - Confirm target file and contracts before coding.
+2. Implement in the right layer
+   - Keep domain rules in `app/domain/use_cases/*`.
+   - Keep API transport in `app/api/*` and worker orchestration in `app/workers/loop.py` or `app/workers/runner.py`.
+3. Wire dependencies
+   - Add/adjust contracts first (`app/domain/contracts.py`) if needed.
+   - Wire adapters in `app/services/bootstrap.py`.
+4. Verify
+   - Add unit tests for business logic.
+   - Add integration tests for runtime path and wiring.
+   - Run `make test-unit`, `make test-integration`, and `make typecheck`.
+5. Finalize
+   - Update `app/COMPONENTS.md` when component boundaries or IDs change.
+   - Update `README.md` only if public runtime behavior changes.
+
+### Terminology: what "matrices" means here
+
+In this document, a matrix means a role registration map/list that must stay consistent across files.
+
+- `role matrix`: canonical role list in `app/roles.py` and user-facing role docs.
+- `stage matrix`: role -> stage mapping in `app/workers/roles.py`.
+- `handler matrix`: role -> handler mapping in `app/workers/handlers/factory.py`.
+- `compose matrix`: service -> role command mapping in `docker-compose.yml` and `docker-compose.override.yml`.
+- `test matrix`: role/service coverage lists in integration tests.
+
+### 10.1 When adding a new worker role
+
+Use this checklist to avoid partial registration:
+
+1. Define role and stage mapping
+   - Add role to `app/roles.py` (`SUPPORTED_ROLES`).
+   - Add stage mapping to `app/workers/roles.py` (`ROLE_TO_STAGE`).
+2. Implement and register handler
+   - Add handler module in `app/workers/handlers/<role_or_stage>.py`.
+   - Register the role in `app/workers/handlers/factory.py` (`build_process_handler`).
+3. Wire runtime services
+   - Add service entries in `docker-compose.yml` and `docker-compose.override.yml`.
+   - Keep role command shape consistent: `python -m app.main --role <role-name>`.
+4. Update test/service matrices
+   - Update `tests/integration/test_runtime_smoke.py` role list.
+   - Update `tests/integration/test_compose_contract.py` service matrix checks.
+5. Update component map and docs
+   - Add/adjust worker component IDs in `app/COMPONENTS.md`.
+   - Update `README.md` if user-facing runtime role list changes.

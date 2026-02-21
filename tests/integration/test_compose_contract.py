@@ -24,7 +24,7 @@ def test_compose_has_postgres_migrator_app_dependency_chain() -> None:
         "api",
         "worker-ingest-telegram",
         "worker-normalize",
-        "worker-llm",
+        "worker-evaluate",
         "worker-deliver",
     ]
 
@@ -44,7 +44,7 @@ def test_app_services_share_single_image_build_context() -> None:
     for service_name in (
         "worker-ingest-telegram",
         "worker-normalize",
-        "worker-llm",
+        "worker-evaluate",
         "worker-deliver",
     ):
         assert services[service_name]["build"] == api_build
@@ -59,7 +59,7 @@ def test_prod_compose_has_no_local_source_mounts_for_app_services() -> None:
         "api",
         "worker-ingest-telegram",
         "worker-normalize",
-        "worker-llm",
+        "worker-evaluate",
         "worker-deliver",
     ):
         volumes = services[service_name].get("volumes", [])
@@ -75,7 +75,7 @@ def test_compose_commands_use_uv_runtime() -> None:
         "api",
         "worker-ingest-telegram",
         "worker-normalize",
-        "worker-llm",
+        "worker-evaluate",
         "worker-deliver",
     ):
         assert prod["services"][service_name]["command"][0] == "uv"
@@ -96,7 +96,7 @@ def test_override_defines_fast_mode_and_full_worker_profile() -> None:
     for service_name in (
         "worker-ingest-telegram",
         "worker-normalize",
-        "worker-llm",
+        "worker-evaluate",
         "worker-deliver",
     ):
         profiles = services[service_name].get("profiles", [])

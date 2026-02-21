@@ -5,7 +5,7 @@ roles=(
   api
   worker-ingest-telegram
   worker-normalize
-  worker-llm
+  worker-evaluate
   worker-deliver
 )
 
