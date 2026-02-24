@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS deliveries;
+DROP TABLE IF EXISTS llm_runs;
+DROP TABLE IF EXISTS evaluations;
+DROP TABLE IF EXISTS artifacts;
+DROP TABLE IF EXISTS submission_sources;
+DROP TABLE IF EXISTS submissions;
+DROP TABLE IF EXISTS candidate_sources;
+DROP TABLE IF EXISTS assignments;
+DROP TABLE IF EXISTS candidates;

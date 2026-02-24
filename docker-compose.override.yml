@@ -1,0 +1,29 @@
+services:
+  api:
+    command: ["sh", "-c", "uv sync --all-groups && uv run python -m app.main --role api --port 8000 --reload"]
+    volumes:
+      - ./:/app
+
+  worker-ingest-telegram:
+    profiles: ["full"]
+    command: ["sh", "-c", "uv sync --all-groups && uv run python -m app.main --role worker-ingest-telegram --port 8101 --reload"]
+    volumes:
+      - ./:/app
+
+  worker-normalize:
+    profiles: ["full"]
+    command: ["sh", "-c", "uv sync --all-groups && uv run python -m app.main --role worker-normalize --port 8102 --reload"]
+    volumes:
+      - ./:/app
+
+  worker-evaluate:
+    profiles: ["full"]
+    command: ["sh", "-c", "uv sync --all-groups && uv run python -m app.main --role worker-evaluate --port 8103 --reload"]
+    volumes:
+      - ./:/app
+
+  worker-deliver:
+    profiles: ["full"]
+    command: ["sh", "-c", "uv sync --all-groups && uv run python -m app.main --role worker-deliver --port 8104 --reload"]
+    volumes:
+      - ./:/app
