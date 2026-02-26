@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +18,7 @@ class ProcessResult:
     detail: str = ""
     artifact_ref: str | None = None
     artifact_version: str | None = None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,3 +66,5 @@ class AssignmentSnapshot:
     title: str
     description: str
     is_active: bool
+
+

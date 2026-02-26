@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -52,7 +52,7 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
 
     worker_loop: WorkerLoop | None = None
     if role.name in ROLE_TO_STAGE:
-        worker_deps = WorkerDeps(storage=storage, telegram=telegram, llm=llm)
+        worker_deps = WorkerDeps(repository=repository, storage=storage, telegram=telegram, llm=llm)
         worker_loop = WorkerLoop(
             role=role.name,
             stage=ROLE_TO_STAGE[role.name],
@@ -70,3 +70,4 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
         on_startup=on_startup,
         on_shutdown=on_shutdown,
     )
+

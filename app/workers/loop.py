@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -81,6 +81,7 @@ class WorkerLoop:
             worker_id=self.role,
             success=result.success,
             detail=result.detail,
-            error_code=None if result.success else "internal_error",
+            error_code=None if result.success else (result.error_code or "internal_error"),
         )
         return True
+

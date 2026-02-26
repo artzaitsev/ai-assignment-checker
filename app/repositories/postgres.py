@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
@@ -34,6 +34,7 @@ SQL_CREATE_SUBMISSION = load_sql("create_submission.sql")
 SQL_FIND_SOURCE = load_sql("find_source.sql")
 SQL_CREATE_SOURCE = load_sql("create_source.sql")
 SQL_GET_SUBMISSION = load_sql("get_submission.sql")
+SQL_GET_ARTIFACT_REFS = load_sql("get_artifact_refs.sql")
 SQL_HEARTBEAT_CLAIM = load_sql("heartbeat_claim.sql")
 SQL_FINALIZE_SUCCESS = load_sql("finalize_success.sql")
 SQL_FINALIZE_FAILURE_RETRY = load_sql("finalize_failure_retry.sql")
@@ -305,6 +306,22 @@ class PostgresWorkRepository:
             last_error_message=row["last_error_message"],
         )
 
+    async def get_artifact_refs(self, *, item_id: str) -> dict[str, str]:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(SQL_GET_ARTIFACT_REFS, item_id)
+
+        refs: dict[str, str] = {}
+        for row in rows:
+            stage = str(row["stage"])
+            object_key = str(row["object_key"])
+            bucket = str(row["bucket"])
+            if bucket == "skeleton":
+                refs[stage] = f"stub://{object_key}"
+            else:
+                refs[stage] = object_key
+        return refs
+
     async def claim_next(self, *, stage: str, worker_id: str, lease_seconds: int = 30) -> WorkItemClaim | None:
         lifecycle = STAGE_LIFECYCLES[stage]
         query = SQL_CLAIM_NEXT.format(attempt_field=lifecycle.attempt_field)
@@ -516,3 +533,6 @@ def _json_object(value: object) -> dict[str, object]:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+
