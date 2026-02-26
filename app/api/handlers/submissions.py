@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.api.handlers.deps import ApiDeps, SubmissionRecord
 from app.api.schemas import CreateSubmissionResponse, UploadSubmissionFileResponse
@@ -58,6 +58,13 @@ async def create_submission_with_file_handler(
         key=f"raw/{submission_id}/{filename}",
         payload=payload,
     )
+    await api_deps.repository.link_artifact(
+        item_id=submission_id,
+        stage="raw",
+        artifact_ref=raw_ref,
+        artifact_version="raw:v1",
+    )
+
     artifacts: dict[str, str] = {}
     put_artifact_ref(artifacts=artifacts, key="raw", artifact_ref=raw_ref)
     api_deps.submissions[submission_id] = SubmissionRecord(

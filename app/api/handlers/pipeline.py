@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.api.handlers.deps import ApiDeps
 from app.api.schemas import RunPipelineResponse
@@ -18,7 +18,7 @@ async def run_test_pipeline_handler(*, submission_id: str, api_deps: ApiDeps) ->
     if record is None:
         return None
 
-    worker_deps = WorkerDeps(storage=api_deps.storage, telegram=api_deps.telegram, llm=api_deps.llm)
+    worker_deps = WorkerDeps(repository=api_deps.repository, storage=api_deps.storage, telegram=api_deps.telegram, llm=api_deps.llm)
 
     record.state = "normalization_in_progress"
     record.transitions.append(record.state)
@@ -76,3 +76,4 @@ async def run_test_pipeline_handler(*, submission_id: str, api_deps: ApiDeps) ->
         transitions=list(record.transitions),
         artifacts=dict(record.artifacts),
     )
+

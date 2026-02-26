@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 
 class DomainError(Exception):
@@ -14,4 +14,12 @@ class DomainInvariantError(DomainError):
 
 
 class DomainDependencyError(DomainError):
+    pass
+
+
+class UnsupportedFormatError(DomainValidationError):
+    pass
+
+
+class NormalizationParseError(DomainError):
     pass
