@@ -1,4 +1,4 @@
-"""Synthetic HTTP-level e2e tests for the internal test pipeline endpoint.
+﻿"""Synthetic HTTP-level e2e tests for the internal test pipeline endpoint.
 
 How to run only this file:
 - `pytest -q tests/integration/test_synthetic_e2e_pipeline.py`
@@ -58,7 +58,7 @@ def test_file_upload_and_synthetic_pipeline_end_to_end() -> None:
         assert pipeline_response.status_code == 200
         payload = pipeline_response.json()
         assert payload["state"] == "delivered"
-        assert payload["artifacts"]["normalized"].startswith("normalized/")
+        assert payload["artifacts"]["normalized"].startswith("stub://normalized/")
         assert "llm-output" not in payload["artifacts"]
         assert "feedback" not in payload["artifacts"]
         assert "exports" not in payload["artifacts"]

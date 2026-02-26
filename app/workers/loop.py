@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -105,3 +105,4 @@ class WorkerLoop:
             error_code=error_code,
         )
         return True
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -81,3 +81,4 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
         on_startup=on_startup,
         on_shutdown=on_shutdown,
     )
+

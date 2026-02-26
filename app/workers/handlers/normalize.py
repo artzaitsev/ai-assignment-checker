@@ -1,7 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import NormalizePayloadCommand
+from app.domain.errors import NormalizationParseError, UnsupportedFormatError
 from app.domain.models import ProcessResult, WorkItemClaim
 from app.domain.use_cases.normalize import normalize_payload
 from app.workers.handlers.deps import WorkerDeps

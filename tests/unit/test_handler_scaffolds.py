@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 
 import pytest
 
@@ -101,7 +101,7 @@ def test_ingest_telegram_handler_idle_when_no_updates() -> None:
 @pytest.mark.unit
 def test_handlers_execute_skeleton_flow() -> None:
     storage = StubStorageClient()
-    artifact_repository = build_artifact_repository(storage=storage)
+    artifact_repository = build_artifact_repository(repository=InMemoryWorkRepository(), storage=storage)
     repository = InMemoryWorkRepository()
     telegram = StubTelegramClient()
     llm = StubLLMClient()

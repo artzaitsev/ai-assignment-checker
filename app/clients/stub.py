@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -23,6 +23,13 @@ class StubStorageClient:
         if payload is None:
             raise KeyError(f"storage key not found: {key}")
         return payload
+
+    def get_bytes(self, *, ref: str) -> bytes:
+        key = ref.removeprefix("stub://")
+        value = self._objects.get(key)
+        if value is None:
+            raise FileNotFoundError(f"artifact not found: {ref}")
+        return value
 
 
 @dataclass
