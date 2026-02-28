@@ -6,7 +6,8 @@ import os
 
 from app.api.handlers.deps import ApiDeps
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
-from app.domain.contracts import LLMClient, StorageClient, TelegramClient, WorkRepository
+from app.domain.contracts import ArtifactRepository, LLMClient, StorageClient, TelegramClient, WorkRepository
+from app.lib.artifacts import build_artifact_repository
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from app.repositories.stub import InMemoryWorkRepository
 from app.roles import RuntimeRole
@@ -19,6 +20,7 @@ from app.workers.roles import ROLE_TO_STAGE
 @dataclass
 class RuntimeContainer:
     repository: WorkRepository
+    artifact_repository: ArtifactRepository
     storage: StorageClient
     telegram: TelegramClient
     llm: LLMClient
@@ -40,10 +42,12 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
     else:
         repository = InMemoryWorkRepository()
     storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
     telegram = StubTelegramClient()
     llm = StubLLMClient()
     api_deps = ApiDeps(
         repository=repository,
+        artifact_repository=artifact_repository,
         storage=storage,
         telegram=telegram,
         llm=llm,
@@ -52,7 +56,13 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
 
     worker_loop: WorkerLoop | None = None
     if role.name in ROLE_TO_STAGE:
-        worker_deps = WorkerDeps(storage=storage, telegram=telegram, llm=llm)
+        worker_deps = WorkerDeps(
+            repository=repository,
+            artifact_repository=artifact_repository,
+            storage=storage,
+            telegram=telegram,
+            llm=llm,
+        )
         worker_loop = WorkerLoop(
             role=role.name,
             stage=ROLE_TO_STAGE[role.name],
@@ -62,6 +72,7 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
 
     return RuntimeContainer(
         repository=repository,
+        artifact_repository=artifact_repository,
         storage=storage,
         telegram=telegram,
         llm=llm,

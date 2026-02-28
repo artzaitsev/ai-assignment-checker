@@ -28,6 +28,10 @@ Entrypoint: `app/main.py`
   - Dependency wiring/bootstrap.
   - Builds runtime container and injects contracts/adapters.
 
+- `app/lib`
+  - Infrastructure support libraries shared by adapters/handlers.
+  - `app/lib/artifacts/*` owns artifact serialization, version checks, and storage mapping.
+
 - `app/workers`
   - Worker orchestration:
     - polling runner
@@ -38,6 +42,7 @@ Entrypoint: `app/main.py`
 - `app/domain`
   - Core contracts, DTOs, models, use-cases.
   - Main place for production business logic.
+  - Artifact I/O is accessed via `ArtifactRepository` contract.
   - Must not import transport/framework/SDK-specific modules.
 
 - `app/repositories`
@@ -59,6 +64,7 @@ And:
 - `repositories` and `clients` implement domain contracts.
 - `domain` must not depend on `api`, `workers`, FastAPI, Uvicorn, provider SDKs, or DB drivers.
 - `workers/services` should use interfaces, not concrete infrastructure imports in business code.
+- Artifact contract compatibility policy defaults to `strict` (`ARTIFACT_COMPAT_POLICY=strict`).
 
 ## 4) Request and Worker Flows
 
@@ -68,6 +74,7 @@ And:
 - Routes call handler functions from `app/api/handlers/*`.
 - Handlers call domain use-cases (or stubs for now).
 - Responses are mapped back to HTTP JSON.
+- Export retrieval is API-mediated (`download_url` -> `/exports/{export_id}/download`) so storage can remain private.
 
 Current key routes:
 
@@ -77,10 +84,12 @@ Current key routes:
 - `POST /assignments`
 - `GET /assignments`
 - `POST /submissions`
+- `POST /webhooks/telegram`
 - `GET /submissions/{submission_id}`
 - `POST /submissions/file` (synthetic infra check)
 - `GET /feedback`
 - `POST /exports`
+- `GET /exports/{export_id}/download`
 - `POST /internal/test/run-pipeline` (synthetic infra check)
 
 ### Worker flow (worker-* roles)
@@ -102,12 +111,13 @@ Why each step exists:
 - `process(claim)`
   - Execute stage-specific business behavior (normalize/evaluate/deliver/etc).
   - Returns `ProcessResult` with success flag, detail, and optional artifact metadata.
+  - Evaluate stage resolves chain spec from `app/eval/chains/chain.v1.yaml` and uses domain chain execution (`app/domain/evaluation_chain.py`).
 
 - `link_artifact(...)` (optional)
   - Persist artifact reference/version when stage produced output.
   - Optional because some stages may only change state and not create artifacts.
   - Artifact trace keys are documented in `app/domain/artifacts.py`.
-  - Most keys map 1:1 to stages, but `llm-output` stage can also produce `feedback`.
+  - Keys map 1:1 to persisted artifact-producing stages.
 
 - `finalize(...)`
   - Record final outcome of the stage attempt (success/failure + detail).
@@ -214,12 +224,53 @@ Use this checklist before opening a PR:
 - [ ] Integration tests cover runtime/wiring path changes.
 - [ ] If a new role was added, role/stage/handler/compose/test matrices are all updated.
 - [ ] `make test`, `make test-unit`, `make test-integration`, and `make typecheck` pass.
+- [ ] Cross-track edits outside primary ownership scope reference an explicit seam contract from `app/COMPONENTS.md` (`seam.*`).
+
+## 7.1) Parallel Ownership Boundaries
+
+The contract-freeze workflow uses five primary ownership tracks to reduce PR conflicts:
+
+- Platform: runtime/bootstrap/repository claim semantics
+- Ingress: API upload and Telegram intake boundaries
+- Evaluation: normalized + llm-output contracts and deterministic scoring
+- Delivery/Export: feedback payloads and organizer export shaping
+- Quality: test matrix and acceptance checks
+
+When a change must touch another track's primary files, keep edits limited to documented seam files and call out the seam contract in the PR checklist.
 
 ## 8) Synthetic End-to-End Note
 
 `POST /submissions/file` and `POST /internal/test/run-pipeline` are for infrastructure verification only.
 
 They validate that routing, handlers, wiring, and stage sequencing work together in-process, without requiring real persistence/integrations.
+
+### 8.1) Quick Usage
+
+Recommended local verification sequence:
+
+1. Create candidate and assignment via API routes.
+2. Upload a file with `POST /submissions/file`.
+3. Execute synthetic chain with `POST /internal/test/run-pipeline`.
+4. Inspect final state/trace with `GET /submissions/{submission_id}`.
+
+Minimal pipeline trigger example:
+
+```bash
+curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
+  -H "Content-Type: application/json" \
+  -d '{"submission_id":"sub_01ABCDEF0123456789ABCDEF01"}'
+```
+
+State semantics:
+
+- success path: `uploaded -> normalization_in_progress -> normalized -> evaluation_in_progress -> evaluated -> delivery_in_progress -> delivered`
+- fail-fast path: pipeline stops at first failed stage and returns `failed_*`
+
+### 8.2 Deferred Post-MVP Hardening
+
+- Submission-level evaluation snapshot (`chain_digest` plus resolved chain spec) is deferred for post-MVP.
+- Current evaluate flow resolves the default chain spec at runtime from `app/eval/chains/chain.v1.yaml`.
+- Chain mismatch policy after snapshot rollout: start with `warn-only` diagnostics on digest mismatch, then promote to `strict-fail` once persistence is stable.
 
 ## 9) Common Mistakes
 
@@ -231,10 +282,10 @@ Do:
 @app.post("/submissions")
 async def create_submission(payload: CreateSubmissionRequest):
     return await create_submission_with_candidate_handler(
+        api_deps,
         source_external_id=payload.source_external_id,
         candidate_public_id=payload.candidate_public_id,
         assignment_public_id=payload.assignment_public_id,
-        api_deps=api_deps,
     )
 ```
 
@@ -255,7 +306,7 @@ async def create_submission(payload: dict[str, str] = Body(default={})):
 Do:
 
 ```python
-def evaluate_submission(cmd: EvaluateSubmissionCommand, *, llm: LLMClient, storage: StorageClient) -> EvaluateSubmissionResult:
+def evaluate_submission(cmd: EvaluateSubmissionCommand, *, llm: LLMClient) -> EvaluateSubmissionResult:
     ...
 ```
 
@@ -274,7 +325,7 @@ def evaluate_submission(cmd: EvaluateSubmissionCommand) -> EvaluateSubmissionRes
 Do:
 
 ```python
-def process_claim(claim: WorkItemClaim, deps: WorkerDeps) -> ProcessResult:
+def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
     # worker.evaluate.process_claim
     ...
 ```
@@ -296,7 +347,7 @@ Do:
 ```python
 @dataclass(frozen=True)
 class PrepareExportResult:
-    export_ref: str
+    export_rows: list[ExportRowArtifact]
 ```
 
 Don't:

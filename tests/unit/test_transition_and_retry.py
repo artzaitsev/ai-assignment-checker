@@ -43,12 +43,12 @@ def test_retry_counter_and_error_code_persisted_on_failure() -> None:
             worker_id="worker-normalize",
             success=False,
             detail="bad payload",
-            error_code="schema_validation_failed",
+            error_code="internal_error",
         )
         snapshot = await repo.get_submission(submission_id=created.submission_id)
         assert snapshot is not None
         assert snapshot.attempt_normalization == 1
-        assert snapshot.last_error_code == "schema_validation_failed"
+        assert snapshot.last_error_code == "internal_error"
         assert snapshot.status == "uploaded"
 
     asyncio.run(_run())

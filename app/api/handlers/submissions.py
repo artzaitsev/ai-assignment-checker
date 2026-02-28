@@ -8,13 +8,13 @@ COMPONENT_ID = "api.create_submission"
 
 
 async def create_submission_with_candidate_handler(
+    deps: ApiDeps,
     *,
     source_external_id: str,
     candidate_public_id: str,
     assignment_public_id: str,
-    api_deps: ApiDeps,
 ) -> CreateSubmissionResponse:
-    persisted = await api_deps.repository.create_submission_with_source(
+    persisted = await deps.repository.create_submission_with_source(
         candidate_public_id=candidate_public_id,
         assignment_public_id=assignment_public_id,
         source_type="api_upload",
@@ -22,7 +22,7 @@ async def create_submission_with_candidate_handler(
         initial_status="uploaded",
         metadata_json={"entrypoint": "api"},
     )
-    api_deps.submissions[persisted.submission_id] = SubmissionRecord(
+    deps.submissions[persisted.submission_id] = SubmissionRecord(
         submission_id=persisted.submission_id,
         state=persisted.status,
         candidate_public_id=candidate_public_id,
@@ -37,15 +37,15 @@ async def create_submission_with_candidate_handler(
 
 
 async def create_submission_with_file_handler(
+    deps: ApiDeps,
     *,
     filename: str,
     payload: bytes,
     candidate_public_id: str,
     assignment_public_id: str,
-    api_deps: ApiDeps,
 ) -> UploadSubmissionFileResponse:
-    source_external_id = f"file-{len(api_deps.submissions) + 1}"
-    persisted = await api_deps.repository.create_submission_with_source(
+    source_external_id = f"file-{len(deps.submissions) + 1}"
+    persisted = await deps.repository.create_submission_with_source(
         candidate_public_id=candidate_public_id,
         assignment_public_id=assignment_public_id,
         source_type="api_upload",
@@ -54,13 +54,19 @@ async def create_submission_with_file_handler(
         metadata_json={"filename": filename},
     )
     submission_id = persisted.submission_id
-    raw_ref = api_deps.storage.put_bytes(
+    raw_ref = deps.storage.put_bytes(
         key=f"raw/{submission_id}/{filename}",
         payload=payload,
     )
+    await deps.repository.link_artifact(
+        item_id=submission_id,
+        stage="raw",
+        artifact_ref=raw_ref,
+        artifact_version=None,
+    )
     artifacts: dict[str, str] = {}
     put_artifact_ref(artifacts=artifacts, key="raw", artifact_ref=raw_ref)
-    api_deps.submissions[submission_id] = SubmissionRecord(
+    deps.submissions[submission_id] = SubmissionRecord(
         submission_id=submission_id,
         state="uploaded",
         candidate_public_id=candidate_public_id,

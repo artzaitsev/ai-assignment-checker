@@ -65,7 +65,7 @@ def test_storage_stub_enforces_prefix_contract() -> None:
     container = build_runtime_container(role)
 
     ok_key = f"{STORAGE_PREFIXES[0]}submission-1.txt"
-    assert container.storage.put_bytes(key=ok_key, payload=b"hello").startswith("stub://")
+    assert container.storage.put_bytes(key=ok_key, payload=b"hello").startswith("s3://")
 
     with pytest.raises(ValueError):
         container.storage.put_bytes(key="unknown/submission-2.txt", payload=b"hello")

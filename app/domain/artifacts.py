@@ -5,18 +5,15 @@ from app.domain.lifecycle import STAGE_LIFECYCLES
 ALLOWED_ARTIFACT_KEYS: tuple[str, ...] = (
     "raw",
     "normalized",
-    "llm-output",
-    "feedback",
     "exports",
 )
 
 # Artifact keys are trace labels used by API/status payloads.
-# They are related to processing stages, but are not strictly 1:1:
-# the llm-output stage may produce both llm-output and feedback refs.
+# Current MVP stores normalized and exports artifacts in object storage.
 STAGE_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
     "raw": ("raw",),
     "normalized": ("normalized",),
-    "llm-output": ("llm-output", "feedback"),
+    "llm-output": tuple(),
     "exports": ("exports",),
 }
 
