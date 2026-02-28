@@ -8,13 +8,13 @@ COMPONENT_ID_LIST = "api.list_assignments"
 
 
 async def create_assignment_handler(
+    deps: ApiDeps,
     *,
     title: str,
     description: str,
     is_active: bool,
-    api_deps: ApiDeps,
 ) -> AssignmentResponse:
-    assignment = await api_deps.repository.create_assignment(
+    assignment = await deps.repository.create_assignment(
         title=title,
         description=description,
         is_active=is_active,
@@ -27,8 +27,8 @@ async def create_assignment_handler(
     )
 
 
-async def list_assignments_handler(*, active_only: bool, api_deps: ApiDeps) -> ListAssignmentsResponse:
-    items = await api_deps.repository.list_assignments(active_only=active_only)
+async def list_assignments_handler(deps: ApiDeps, *, active_only: bool) -> ListAssignmentsResponse:
+    items = await deps.repository.list_assignments(active_only=active_only)
     return ListAssignmentsResponse(
         items=[
             AssignmentResponse(

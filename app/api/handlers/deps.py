@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.domain.contracts import LLMClient, StorageClient, TelegramClient, WorkRepository
+from app.domain.contracts import ArtifactRepository, LLMClient, StorageClient, TelegramClient, WorkRepository
 
 
 @dataclass
@@ -18,6 +18,7 @@ class SubmissionRecord:
 @dataclass(frozen=True)
 class ApiDeps:
     repository: WorkRepository
+    artifact_repository: ArtifactRepository
     storage: StorageClient
     telegram: TelegramClient
     llm: LLMClient

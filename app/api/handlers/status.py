@@ -15,12 +15,12 @@ async def get_submission_status_handler(submission_id: str) -> SubmissionStatusR
 
 
 async def get_submission_status_with_trace_handler(
+    deps: ApiDeps,
     *,
     submission_id: str,
-    api_deps: ApiDeps,
 ) -> SubmissionStatusResponse | None:
     """Here you can implement production business logic for api.get_submission_status."""
-    record = api_deps.submissions.get(submission_id)
+    record = deps.submissions.get(submission_id)
     if record is None:
         return None
     return SubmissionStatusResponse(

@@ -82,7 +82,7 @@ CREATE INDEX submissions_assignment_idx ON submissions (assignment_id);
 
 CREATE TABLE submission_sources (
   id BIGSERIAL PRIMARY KEY,
-  submission_id BIGINT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+  submission_id BIGINT NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
   source_type TEXT NOT NULL CHECK (source_type IN ('api_upload', 'telegram_webhook')),
   source_external_id TEXT NOT NULL,
   source_payload_ref TEXT,
@@ -110,14 +110,15 @@ CREATE INDEX artifacts_submission_idx ON artifacts (submission_id);
 
 CREATE TABLE evaluations (
   id BIGSERIAL PRIMARY KEY,
-  submission_id BIGINT NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+  submission_id BIGINT NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
   score_1_10 INTEGER,
   criteria_scores_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   organizer_feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   candidate_feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   ai_assistance_likelihood DOUBLE PRECISION,
   confidence DOUBLE PRECISION,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX evaluations_submission_idx ON evaluations (submission_id);
@@ -128,10 +129,9 @@ CREATE TABLE llm_runs (
   provider TEXT NOT NULL,
   model TEXT NOT NULL,
   api_base TEXT,
-  prompt_version TEXT NOT NULL,
   chain_version TEXT NOT NULL,
-  rubric_version TEXT NOT NULL,
-  result_schema_version TEXT NOT NULL,
+  spec_version TEXT NOT NULL,
+  response_language TEXT NOT NULL,
   temperature DOUBLE PRECISION,
   seed BIGINT,
   tokens_input INTEGER,

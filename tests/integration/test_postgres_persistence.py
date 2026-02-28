@@ -96,12 +96,12 @@ def test_retry_progression_and_dead_letter_transition() -> None:
                     worker_id="worker-normalize",
                     success=False,
                     detail="boom",
-                    error_code="schema_validation_failed",
+                    error_code="internal_error",
                 )
             snapshot = await repo.get_submission(submission_id=created.submission_id)
             assert snapshot is not None
             assert snapshot.attempt_normalization == 3
-            assert snapshot.last_error_code == "schema_validation_failed"
+            assert snapshot.last_error_code == "internal_error"
             assert snapshot.status == "dead_letter"
         finally:
             await manager.shutdown()
@@ -206,6 +206,123 @@ def test_reclaim_and_stale_owner_guards() -> None:
                     success=True,
                     detail="stale",
                 )
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_terminal_error_maps_to_failed_stage_state() -> None:
+    dsn = require_postgres()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="terminal-1",
+                initial_status="uploaded",
+            )
+            claim = await repo.claim_next(stage="normalized", worker_id="worker-normalize", lease_seconds=5)
+            assert claim is not None
+            await repo.finalize(
+                item_id=claim.item_id,
+                stage="normalized",
+                worker_id="worker-normalize",
+                success=False,
+                detail="invalid payload",
+                error_code="schema_validation_failed",
+            )
+            snapshot = await repo.get_submission(submission_id=created.submission_id)
+            assert snapshot is not None
+            assert snapshot.status == "failed_normalization"
+            assert snapshot.last_error_code == "schema_validation_failed"
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_reproducibility_metadata_persistence_contract() -> None:
+    dsn = require_postgres()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="repro-1",
+                initial_status="normalized",
+            )
+            reproducibility = {
+                "chain_version": "chain:v1",
+                "spec_version": "chain-spec:v1",
+                "model": "model:v1",
+                "response_language": "ru",
+            }
+            await repo.persist_llm_run(
+                submission_id=created.submission_id,
+                provider="openai-compatible",
+                model="model:v1",
+                api_base="https://example.invalid",
+                chain_version="chain:v1",
+                spec_version="chain-spec:v1",
+                response_language="ru",
+                temperature=0.1,
+                seed=42,
+                tokens_input=123,
+                tokens_output=456,
+                latency_ms=789,
+            )
+            await repo.persist_evaluation(
+                submission_id=created.submission_id,
+                score_1_10=8,
+                criteria_scores_json={"correctness": 8},
+                organizer_feedback_json={"strengths": ["clear"]},
+                candidate_feedback_json={"summary": "good"},
+                ai_assistance_likelihood=0.35,
+                ai_assistance_confidence=0.55,
+                reproducibility_subset=reproducibility,
+            )
+
+            pool = manager.pool
+            assert pool is not None
+            async with pool.acquire() as conn:
+                llm_row = await conn.fetchrow(
+                    "SELECT chain_version, spec_version, response_language, model FROM llm_runs LIMIT 1"
+                )
+                eval_row = await conn.fetchrow(
+                    "SELECT criteria_scores_json, ai_assistance_likelihood, confidence FROM evaluations LIMIT 1"
+                )
+
+            assert llm_row is not None
+            assert llm_row["chain_version"] == "chain:v1"
+            assert llm_row["spec_version"] == "chain-spec:v1"
+            assert llm_row["response_language"] == "ru"
+            assert llm_row["model"] == "model:v1"
+            assert eval_row is not None
+            assert eval_row["criteria_scores_json"]["_reproducibility"]["chain_version"] == "chain:v1"
+            assert eval_row["criteria_scores_json"]["_reproducibility"]["spec_version"] == "chain-spec:v1"
+            assert eval_row["ai_assistance_likelihood"] == pytest.approx(0.35)
+            assert eval_row["confidence"] == pytest.approx(0.55)
         finally:
             await manager.shutdown()
 

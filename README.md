@@ -38,7 +38,26 @@ Synthetic in-process pipeline checks are available for infrastructure verificati
 - `POST /internal/test/run-pipeline` runs normalize -> evaluate -> deliver handler chain for the submission.
 - `GET /submissions/{id}` returns current state, transitions, and artifact refs for test submissions.
 
-Artifact refs are internal storage references (`stub://...` in skeleton mode), not public download URLs.
+Quick local usage:
+
+1. Create candidate and assignment, then upload a file via `POST /submissions/file`.
+2. Run synthetic pipeline via `POST /internal/test/run-pipeline`.
+3. Read resulting trace via `GET /submissions/{submission_id}`.
+
+Example `curl` for step 2:
+
+```bash
+curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
+  -H "Content-Type: application/json" \
+  -d '{"submission_id":"sub_01ABCDEF0123456789ABCDEF01"}'
+```
+
+Expected states:
+
+- happy path ends with `delivered`
+- fail-fast path ends with one of `failed_normalization`, `failed_evaluation`, `failed_delivery`
+
+Artifact refs are internal storage references (`s3://...` in skeleton mode), not public download URLs.
 
 Current API onboarding flow:
 
@@ -46,6 +65,7 @@ Current API onboarding flow:
 - `POST /assignments` creates assignment metadata.
 - `GET /assignments` lists assignments (active by default).
 - `POST /submissions` requires `candidate_public_id` and `assignment_public_id`.
+- `POST /webhooks/telegram` stores Telegram intake updates idempotently by `update_id`.
 
 Public ID contracts:
 
@@ -140,3 +160,6 @@ Notes:
 - unit-only: `make test-unit`
 - integration-only: `make test-integration`
 - type checking: `make typecheck`
+
+Postgres-backed integration tests run when DB is reachable via `TEST_DATABASE_URL` (or `DATABASE_URL`); otherwise they are skipped.
+CI should provide reachable Postgres and treat Postgres-backed integration coverage as required.

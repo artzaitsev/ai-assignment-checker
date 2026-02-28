@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.evaluation_chain import EvaluationChainSpec
+from app.domain.models import SubmissionListItem
+from app.lib.artifacts.types import ExportRowArtifact, NormalizedArtifact
+
 
 @dataclass(frozen=True)
 class CreateSubmissionCommand:
@@ -39,41 +43,74 @@ class NormalizePayloadCommand:
 
 @dataclass(frozen=True)
 class NormalizePayloadResult:
-    normalized_ref: str
+    normalized_artifact: NormalizedArtifact
     schema_version: str
 
 
 @dataclass(frozen=True)
 class EvaluateSubmissionCommand:
     submission_id: str
-    normalized_ref: str
-    model_version: str
+    normalized_artifact: NormalizedArtifact
+    assignment_title: str
+    assignment_description: str
+    chain_spec: EvaluationChainSpec
+
+
+@dataclass(frozen=True)
+class LLMClientRequest:
+    system_prompt: str
+    user_prompt: str
+    model: str
+    temperature: float
+    seed: int | None
+    response_language: str
+
+
+@dataclass(frozen=True)
+class LLMClientResult:
+    raw_text: str
+    raw_json: dict[str, object] | None
+    tokens_input: int
+    tokens_output: int
+    latency_ms: int
 
 
 @dataclass(frozen=True)
 class EvaluateSubmissionResult:
-    llm_output_ref: str
-    feedback_ref: str
-    model_version: str
+    model: str
+    chain_version: str
+    response_language: str
+    temperature: float
+    seed: int | None
+    tokens_input: int
+    tokens_output: int
+    latency_ms: int
+    score_1_10: int
+    criteria_scores_json: dict[str, object]
+    organizer_feedback_json: dict[str, object]
+    candidate_feedback_json: dict[str, object]
+    ai_assistance_likelihood: float
+    ai_assistance_confidence: float
+    reproducibility_subset: dict[str, str]
 
 
 @dataclass(frozen=True)
 class BuildFeedbackCommand:
     submission_id: str
-    llm_output_ref: str
+    score_1_10: int | None
+    summary: str | None
 
 
 @dataclass(frozen=True)
 class BuildFeedbackResult:
-    feedback_ref: str
+    message_text: str
 
 
 @dataclass(frozen=True)
 class PrepareExportCommand:
-    submission_id: str
-    feedback_ref: str
+    items: list[SubmissionListItem]
 
 
 @dataclass(frozen=True)
 class PrepareExportResult:
-    export_ref: str
+    export_rows: list[ExportRowArtifact]

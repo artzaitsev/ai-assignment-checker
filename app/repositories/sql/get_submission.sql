@@ -10,7 +10,9 @@ SELECT s.public_id,
        claimed_at,
        lease_expires_at,
        last_error_code,
-       last_error_message
+       last_error_message,
+       s.created_at,
+       s.updated_at
 FROM submissions AS s
 JOIN candidates AS c ON c.id = s.candidate_id
 JOIN assignments AS a ON a.id = s.assignment_id

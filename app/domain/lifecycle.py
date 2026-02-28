@@ -52,12 +52,12 @@ STAGE_LIFECYCLES: dict[str, StageLifecycle] = {
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "telegram_update_received": {"telegram_ingest_in_progress"},
-    "telegram_ingest_in_progress": {"uploaded", "telegram_update_received", "dead_letter"},
+    "telegram_ingest_in_progress": {"uploaded", "telegram_update_received", "failed_telegram_ingest", "dead_letter"},
     "uploaded": {"normalization_in_progress"},
-    "normalization_in_progress": {"normalized", "uploaded", "dead_letter"},
+    "normalization_in_progress": {"normalized", "uploaded", "failed_normalization", "dead_letter"},
     "normalized": {"evaluation_in_progress"},
-    "evaluation_in_progress": {"evaluated", "normalized", "dead_letter"},
+    "evaluation_in_progress": {"evaluated", "normalized", "failed_evaluation", "dead_letter"},
     "evaluated": {"delivery_in_progress"},
-    "delivery_in_progress": {"delivered", "evaluated", "dead_letter"},
+    "delivery_in_progress": {"delivered", "evaluated", "failed_delivery", "dead_letter"},
     "dead_letter": set(),
 }

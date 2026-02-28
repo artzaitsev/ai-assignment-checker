@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 import logging
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 
 from app.api.handlers.assignments import create_assignment_handler, list_assignments_handler
 from app.api.handlers.candidates import create_candidate_handler
@@ -15,6 +15,7 @@ from app.api.handlers.feedback import list_feedback_handler
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.api.handlers.status import get_submission_status_handler, get_submission_status_with_trace_handler
 from app.api.handlers.submissions import create_submission_with_candidate_handler, create_submission_with_file_handler
+from app.api.handlers.telegram_webhook import telegram_webhook_handler
 from app.api.schemas import (
     ASSIGNMENT_ID_PATTERN,
     CANDIDATE_ID_PATTERN,
@@ -33,10 +34,13 @@ from app.api.schemas import (
     ReadyResponse,
     RunPipelineResponse,
     SubmissionStatusResponse,
+    TelegramWebhookRequest,
+    TelegramWebhookResponse,
     UploadSubmissionFileResponse,
     WorkerMetrics,
 )
 from app.domain.errors import DomainInvariantError
+from app.domain.models import SortOrder, SubmissionSortBy
 
 from app.workers.loop import WorkerLoop
 from app.workers.runner import (
@@ -166,10 +170,10 @@ def build_app(
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         try:
             return await create_submission_with_candidate_handler(
+                api_deps,
                 source_external_id=request.source_external_id,
                 candidate_public_id=request.candidate_public_id,
                 assignment_public_id=request.assignment_public_id,
-                api_deps=api_deps,
             )
         except DomainInvariantError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -178,8 +182,8 @@ def build_app(
     async def get_submission_status(submission_id: str) -> SubmissionStatusResponse:
         if api_deps is not None:
             traced_status = await get_submission_status_with_trace_handler(
+                api_deps,
                 submission_id=submission_id,
-                api_deps=api_deps,
             )
             if traced_status is not None:
                 return traced_status
@@ -202,11 +206,32 @@ def build_app(
         filename = file.filename or "submission.bin"
         try:
             return await create_submission_with_file_handler(
+                api_deps,
                 filename=filename,
                 payload=file_bytes,
                 candidate_public_id=candidate_public_id,
                 assignment_public_id=assignment_public_id,
-                api_deps=api_deps,
+            )
+        except DomainInvariantError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(
+        "/webhooks/telegram",
+        response_model=TelegramWebhookResponse,
+        responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Submissions"],
+    )
+    async def telegram_webhook(request: TelegramWebhookRequest) -> TelegramWebhookResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+        try:
+            return await telegram_webhook_handler(
+                api_deps,
+                update_id=request.update_id,
+                candidate_public_id=request.candidate_public_id,
+                assignment_public_id=request.assignment_public_id,
+                file_id=request.file_id,
+                file_name=request.file_name,
             )
         except DomainInvariantError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -221,11 +246,11 @@ def build_app(
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         return await create_candidate_handler(
+            api_deps,
             first_name=request.first_name,
             last_name=request.last_name,
             source_type=request.source_type,
             source_external_id=request.source_external_id,
-            api_deps=api_deps,
         )
 
     @app.post(
@@ -238,17 +263,17 @@ def build_app(
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         return await create_assignment_handler(
+            api_deps,
             title=request.title,
             description=request.description,
             is_active=request.is_active,
-            api_deps=api_deps,
         )
 
     @app.get("/assignments", response_model=ListAssignmentsResponse, tags=["Assignments"])
     async def list_assignments(active_only: bool = Query(default=True)) -> ListAssignmentsResponse:
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
-        return await list_assignments_handler(active_only=active_only, api_deps=api_deps)
+        return await list_assignments_handler(api_deps, active_only=active_only)
 
     @app.get("/feedback", response_model=FeedbackListResponse, tags=["Submissions"])
     async def list_feedback(submission_id: str | None = Query(default=None)) -> FeedbackListResponse:
@@ -264,19 +289,46 @@ def build_app(
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         return await export_results_handler(
-            submission_id=request.submission_id,
-            feedback_ref=request.feedback_ref,
-            storage=api_deps.storage,
+            api_deps,
+            statuses=tuple(request.statuses) if request.statuses else None,
+            candidate_public_id=request.candidate_public_id,
+            assignment_public_id=request.assignment_public_id,
+            source_type=request.source_type,
+            sort_by=SubmissionSortBy(request.sort_by),
+            sort_order=SortOrder(request.sort_order),
+            limit=request.limit,
+            offset=request.offset,
         )
 
+    @app.get("/exports/{export_id}/download", tags=["Submissions"])
+    async def download_export(export_id: str) -> Response:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+        key = f"exports/{export_id}.csv"
+        try:
+            payload = api_deps.storage.get_bytes(key=key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="export not found") from exc
+
+        headers = {"Content-Disposition": f'attachment; filename="{export_id}.csv"'}
+        return Response(content=payload, media_type="text/csv; charset=utf-8", headers=headers)
+
+    # Internal-only helper endpoint for local/dev synthetic end-to-end checks.
+    # It executes normalize -> evaluate -> deliver synchronously for a single
+    # submission id and returns the in-memory transition trace.
     @app.post("/internal/test/run-pipeline", response_model=RunPipelineResponse)
     async def run_test_pipeline(request: dict[str, str] = Body(default={})) -> RunPipelineResponse:  # noqa: B008
+        """Run synthetic pipeline for one submission id.
+
+        Intended for tests and local diagnostics; not part of public API.
+        Returns 404 when submission does not exist in current API deps trace.
+        """
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         submission_id = request.get("submission_id")
         if submission_id is None:
             raise HTTPException(status_code=400, detail="submission_id is required")
-        pipeline_result = await run_test_pipeline_handler(submission_id=submission_id, api_deps=api_deps)
+        pipeline_result = await run_test_pipeline_handler(api_deps, submission_id=submission_id)
         if pipeline_result is None:
             raise HTTPException(status_code=404, detail="submission not found")
         return pipeline_result

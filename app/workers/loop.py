@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import logging
 
 from app.domain.contracts import WorkRepository
 from app.domain.artifacts import artifact_keys_for_stage
+from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.errors import DomainInvariantError
 from app.domain.lifecycle import STAGE_LIFECYCLES
 from app.domain.models import ProcessResult, WorkItemClaim
 
 ProcessHandler = Callable[[WorkItemClaim], Awaitable[ProcessResult]]
+logger = logging.getLogger("runtime")
 
 
 @dataclass
@@ -75,12 +78,30 @@ class WorkerLoop:
                 artifact_version=result.artifact_version,
             )
 
+        error_code = None
+        retry_classification = None
+        if not result.success:
+            error_code = resolve_stage_error(
+                stage=self.stage,
+                code=result.error_code or "internal_error",
+            )
+            retry_classification = result.retry_classification or classify_error(error_code)
+            logger.warning(
+                "worker stage failed",
+                extra={
+                    "submission_id": claim.item_id,
+                    "stage": self.stage,
+                    "last_error_code": error_code,
+                    "retry_classification": retry_classification,
+                },
+            )
+
         await self.repository.finalize(
             item_id=claim.item_id,
             stage=self.stage,
             worker_id=self.role,
             success=result.success,
             detail=result.detail,
-            error_code=None if result.success else "internal_error",
+            error_code=error_code,
         )
         return True

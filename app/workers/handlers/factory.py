@@ -8,16 +8,16 @@ from app.workers.loop import ProcessHandler
 
 def build_process_handler(role: str, deps: WorkerDeps) -> ProcessHandler:
     async def _ingest(claim: WorkItemClaim) -> ProcessResult:
-        return await ingest_telegram.process_claim(claim, deps)
+        return await ingest_telegram.process_claim(deps, claim=claim)
 
     async def _normalize(claim: WorkItemClaim) -> ProcessResult:
-        return await normalize.process_claim(claim, deps)
+        return await normalize.process_claim(deps, claim=claim)
 
     async def _evaluate(claim: WorkItemClaim) -> ProcessResult:
-        return await evaluate.process_claim(claim, deps)
+        return await evaluate.process_claim(deps, claim=claim)
 
     async def _deliver(claim: WorkItemClaim) -> ProcessResult:
-        return await deliver.process_claim(claim, deps)
+        return await deliver.process_claim(deps, claim=claim)
 
     handlers: dict[str, ProcessHandler] = {
         "worker-ingest-telegram": _ingest,
