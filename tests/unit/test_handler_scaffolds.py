@@ -35,6 +35,70 @@ def test_worker_handler_component_ids_are_stable() -> None:
 
 
 @pytest.mark.unit
+def test_ingest_telegram_handler_polls_updates() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+    )
+
+    async def _run() -> None:
+        # Prepare candidate and assignment
+        candidate = await repository.create_candidate(first_name="Test", last_name="User")
+        assignment = await repository.create_assignment(title="Test Assignment", description="Test Desc")
+
+        # Add a mock telegram update
+        telegram.updates.append({
+            "update_id": "upd_001",
+            "candidate_public_id": candidate.candidate_public_id,
+            "assignment_public_id": assignment.assignment_public_id,
+            "file_id": "file_123",
+            "file_name": "solution.py",
+        })
+        telegram.files["file_123"] = b"print('hello')"
+
+        claim = WorkItemClaim(item_id="poll-tick-1", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is True
+        assert "processed 1 telegram updates" in result.detail
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_idle_when_no_updates() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+    )
+
+    async def _run() -> None:
+        claim = WorkItemClaim(item_id="poll-tick-2", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is True
+        assert "no new telegram updates" in result.detail
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
 def test_handlers_execute_skeleton_flow() -> None:
     storage = StubStorageClient()
     artifact_repository = build_artifact_repository(storage=storage)

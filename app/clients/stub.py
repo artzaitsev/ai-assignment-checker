@@ -31,7 +31,9 @@ class StubTelegramClient:
     notifications: dict[str, str] = field(default_factory=dict)
     files: dict[str, bytes] = field(default_factory=dict)
 
-    def poll_updates(self) -> list[dict[str, str]]:
+    def poll_updates(self, *, timeout: int = 30) -> list[dict[str, str]]:
+        # Stub: сразу возвращает накопленные updates (без реального long-polling)
+        # timeout используется в production для long-polling Bot API
         return list(self.updates)
 
     def get_file_bytes(self, *, file_id: str) -> bytes:
