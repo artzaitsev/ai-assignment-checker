@@ -91,6 +91,22 @@ Dead-letter processing is not implemented yet; `dead_letter` currently acts as a
 
 `migrator` is external and not an app role.
 
+## Environment Variables
+
+Use `.env.example` in repo root as the canonical variable template.
+
+It groups variables into three buckets:
+
+- already used by runtime/tests
+- already present in docker-compose postgres service
+- required once real integrations replace stubs (S3, Telegram, LLM)
+
+Copy example locally:
+
+```bash
+cp .env.example .env
+```
+
 ## Local Setup (uv + .venv)
 
 ```bash
