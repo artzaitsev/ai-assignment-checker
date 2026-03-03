@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from app.api.handlers.deps import ApiDeps
 from app.api.schemas import SubmissionStatusResponse
@@ -21,12 +21,12 @@ async def get_submission_status_with_trace_handler(
 ) -> SubmissionStatusResponse | None:
     """Combines in-memory trace with repository-backed status/artifact refs."""
     record = deps.submissions.get(submission_id)
-    snapshot = await api_deps.repository.get_submission(submission_id=submission_id)
+    snapshot = await deps.repository.get_submission(submission_id=submission_id)
 
     if record is None and snapshot is None:
         return None
 
-    repo_artifacts = await api_deps.repository.get_artifact_refs(item_id=submission_id)
+    repo_artifacts = await deps.repository.get_artifact_refs(item_id=submission_id)
     merged_artifacts: dict[str, str] = {}
     if record is not None:
         merged_artifacts.update(record.artifacts)

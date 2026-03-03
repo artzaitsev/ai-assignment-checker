@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -24,13 +24,6 @@ class StubStorageClient:
             raise KeyError(f"storage key not found: {key}")
         return payload
 
-    def get_bytes(self, *, ref: str) -> bytes:
-        key = ref.removeprefix("stub://")
-        value = self._objects.get(key)
-        if value is None:
-            raise FileNotFoundError(f"artifact not found: {ref}")
-        return value
-
 
 @dataclass
 class StubTelegramClient:
@@ -39,8 +32,7 @@ class StubTelegramClient:
     files: dict[str, bytes] = field(default_factory=dict)
 
     def poll_updates(self, *, timeout: int = 30) -> list[dict[str, str]]:
-        # Stub: сразу возвращает накопленные updates (без реального long-polling)
-        # timeout используется в production для long-polling Bot API
+        del timeout
         return list(self.updates)
 
     def get_file_bytes(self, *, file_id: str) -> bytes:
@@ -50,7 +42,6 @@ class StubTelegramClient:
         return payload
 
     def send_result_notification(self, *, submission_id: str, message: str) -> str | None:
-        # Idempotent by submission id in stub mode.
         if submission_id in self.notifications:
             return f"msg:{submission_id}"
         self.notifications[submission_id] = message

@@ -540,11 +540,7 @@ class PostgresWorkRepository:
         for row in rows:
             stage = str(row["stage"])
             object_key = str(row["object_key"])
-            bucket = str(row["bucket"])
-            if bucket == "skeleton":
-                refs[stage] = f"stub://{object_key}"
-            else:
-                refs[stage] = object_key
+            refs[stage] = object_key
         return refs
 
     async def claim_next(self, *, stage: str, worker_id: str, lease_seconds: int = 30) -> WorkItemClaim | None:
@@ -847,3 +843,4 @@ def _json_object_or_none(value: object | None) -> dict[str, object] | None:
     if value is None:
         return None
     return _json_object(value)
+

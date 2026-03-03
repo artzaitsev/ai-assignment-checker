@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from io import BytesIO
 import re
@@ -10,7 +10,7 @@ SUPPORTED_FORMATS: tuple[str, ...] = (".txt", ".md", ".docx", ".pdf")
 
 
 def extension_from_artifact_ref(*, artifact_ref: str) -> str:
-    key = artifact_ref.removeprefix("stub://")
+    key = _storage_key_from_ref(artifact_ref)
     suffix = PurePosixPath(key).suffix.lower()
     if suffix in SUPPORTED_FORMATS:
         return suffix
@@ -51,7 +51,7 @@ def _parse_text(payload: bytes) -> str:
 def _parse_docx(payload: bytes) -> str:
     try:
         from docx import Document
-    except ModuleNotFoundError as exc:  
+    except ModuleNotFoundError as exc:
         raise NormalizationParseError("python-docx is not installed") from exc
 
     doc = Document(BytesIO(payload))
@@ -83,3 +83,9 @@ def _parse_pdf(payload: bytes) -> str:
             if value:
                 pages.append(value)
     return "\n\n".join(pages)
+
+
+def _storage_key_from_ref(artifact_ref: str) -> str:
+    if "://" in artifact_ref:
+        return artifact_ref.split("://", maxsplit=1)[1]
+    return artifact_ref

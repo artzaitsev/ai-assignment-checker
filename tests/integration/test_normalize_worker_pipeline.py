@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 
@@ -40,6 +40,7 @@ def test_upload_then_normalize_worker_then_status_has_normalized_artifact() -> N
 
         deps = WorkerDeps(
             repository=container.repository,
+            artifact_repository=container.artifact_repository,
             storage=container.storage,
             telegram=container.telegram,
             llm=container.llm,
@@ -48,7 +49,7 @@ def test_upload_then_normalize_worker_then_status_has_normalized_artifact() -> N
             role="worker-normalize",
             stage="normalized",
             repository=container.repository,
-            process=lambda claim: normalize_process_claim(claim, deps),
+            process=lambda claim: normalize_process_claim(deps, claim=claim),
         )
         did_work = asyncio.run(loop.run_once())
         assert did_work is True
@@ -57,5 +58,4 @@ def test_upload_then_normalize_worker_then_status_has_normalized_artifact() -> N
         assert status_response.status_code == 200
         payload = status_response.json()
         assert payload["state"] == "normalized"
-        assert payload["artifacts"]["normalized"].startswith("stub://normalized/")
-
+        assert payload["artifacts"]["normalized"].startswith("normalized/")
