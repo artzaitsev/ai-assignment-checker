@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.api.handlers.deps import ApiDeps, SubmissionRecord
 from app.api.schemas import CreateSubmissionResponse, UploadSubmissionFileResponse

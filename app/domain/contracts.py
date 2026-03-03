@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
@@ -80,6 +80,8 @@ class WorkRepository(Protocol):
     async def get_submission(self, *, submission_id: str) -> SubmissionSnapshot | None: ...
 
     async def list_submissions(self, *, query: SubmissionListQuery) -> list[SubmissionListItem]: ...
+
+    async def get_artifact_refs(self, *, item_id: str) -> dict[str, str]: ...
 
     async def claim_next(self, *, stage: str, worker_id: str, lease_seconds: int = 30) -> WorkItemClaim | None: ...
 

@@ -132,3 +132,4 @@ def test_pipeline_stops_when_evaluation_fails(monkeypatch: pytest.MonkeyPatch) -
         status_response = client.get(f"/submissions/{submission_id}")
         assert status_response.status_code == 200
         assert status_response.json()["state"] == "failed_evaluation"
+

@@ -367,3 +367,4 @@ def test_evaluate_handler_returns_artifact_missing_when_assignment_absent() -> N
         assert result.error_code == "artifact_missing"
 
     asyncio.run(_run())
+

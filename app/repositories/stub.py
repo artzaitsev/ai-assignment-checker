@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -310,6 +310,14 @@ class InMemoryWorkRepository:
         start = query.offset
         end = query.offset + query.limit
         return items[start:end]
+
+    async def get_artifact_refs(self, *, item_id: str) -> dict[str, str]:
+        refs: dict[str, str] = {}
+        for submission_id, stage, artifact_ref, _artifact_version in self.artifacts:
+            if submission_id != item_id:
+                continue
+            refs[stage] = artifact_ref
+        return refs
 
     async def claim_next(self, *, stage: str, worker_id: str, lease_seconds: int = 30) -> WorkItemClaim | None:
         lifecycle = STAGE_LIFECYCLES[stage]

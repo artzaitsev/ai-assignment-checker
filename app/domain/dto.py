@@ -39,6 +39,8 @@ class LinkArtifactCommand:
 class NormalizePayloadCommand:
     submission_id: str
     artifact_ref: str
+    assignment_public_id: str | None = None
+    source_type: str | None = None
 
 
 @dataclass(frozen=True)

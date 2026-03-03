@@ -7,6 +7,7 @@ from typing import Literal
 ErrorCode = Literal[
     "validation_error",
     "unsupported_format",
+    "normalization_parse_error",
     "telegram_update_invalid",
     "telegram_file_fetch_failed",
     "artifact_missing",
@@ -22,6 +23,7 @@ RetryClassification = Literal["recoverable", "terminal"]
 CANONICAL_ERROR_CODES: tuple[ErrorCode, ...] = (
     "validation_error",
     "unsupported_format",
+    "normalization_parse_error",
     "telegram_update_invalid",
     "telegram_file_fetch_failed",
     "artifact_missing",
@@ -34,6 +36,7 @@ CANONICAL_ERROR_CODES: tuple[ErrorCode, ...] = (
 # Errors that can be retried within stage attempt policy.
 RECOVERABLE_ERROR_CODES: frozenset[ErrorCode] = frozenset(
     {
+        "normalization_parse_error",
         "telegram_file_fetch_failed",
         "artifact_missing",
         "llm_provider_unavailable",
@@ -56,6 +59,7 @@ STAGE_ERROR_MAP: Mapping[str, frozenset[ErrorCode]] = {
     "normalized": frozenset(
         {
             "unsupported_format",
+            "normalization_parse_error",
             "artifact_missing",
             "schema_validation_failed",
             "validation_error",
@@ -97,5 +101,4 @@ def resolve_stage_error(*, stage: str, code: str) -> ErrorCode:
     allowed = STAGE_ERROR_MAP.get(stage, frozenset({"internal_error"}))
     if code in allowed and is_canonical_error_code(code):
         return code
-    # Keep persistence stable even if upstream emitted unsupported code.
     return "internal_error"
