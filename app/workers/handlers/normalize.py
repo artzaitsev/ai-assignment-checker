@@ -14,9 +14,12 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     try:
         raw_artifact_ref = await deps.repository.get_artifact_ref(item_id=claim.item_id, stage="raw")
         raw_storage_key = _storage_key_from_ref(raw_artifact_ref)
-        deps.storage.get_bytes(key=raw_storage_key)
+
+        payload = deps.storage.get_bytes(key=raw_storage_key)
+
         result = normalize_payload(
-            NormalizePayloadCommand(submission_id=claim.item_id, artifact_ref=raw_artifact_ref)
+            NormalizePayloadCommand(submission_id=claim.item_id, artifact_ref=raw_artifact_ref),
+            payload=payload,
         )
     except KeyError as exc:
         error_code = resolve_stage_error(stage="normalized", code="artifact_missing")
