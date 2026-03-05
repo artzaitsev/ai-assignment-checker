@@ -15,6 +15,7 @@ from app.workers.handlers.deps import WorkerDeps
 from app.workers.handlers.factory import build_process_handler
 from app.workers.loop import WorkerLoop
 from app.workers.roles import ROLE_TO_STAGE
+from app.workers.telegram_polling_loop import TelegramPollingWorkerLoop
 
 
 @dataclass
@@ -63,7 +64,8 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
             telegram=telegram,
             llm=llm,
         )
-        worker_loop = WorkerLoop(
+        loop_cls = TelegramPollingWorkerLoop if role.name == "worker-ingest-telegram" else WorkerLoop
+        worker_loop = loop_cls(
             role=role.name,
             stage=ROLE_TO_STAGE[role.name],
             repository=repository,

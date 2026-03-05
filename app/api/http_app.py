@@ -15,7 +15,6 @@ from app.api.handlers.feedback import list_feedback_handler
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.api.handlers.status import get_submission_status_handler, get_submission_status_with_trace_handler
 from app.api.handlers.submissions import create_submission_with_candidate_handler, create_submission_with_file_handler
-from app.api.handlers.telegram_webhook import telegram_webhook_handler
 from app.api.schemas import (
     ASSIGNMENT_ID_PATTERN,
     CANDIDATE_ID_PATTERN,
@@ -34,8 +33,6 @@ from app.api.schemas import (
     ReadyResponse,
     RunPipelineResponse,
     SubmissionStatusResponse,
-    TelegramWebhookRequest,
-    TelegramWebhookResponse,
     UploadSubmissionFileResponse,
     WorkerMetrics,
 )
@@ -211,27 +208,6 @@ def build_app(
                 payload=file_bytes,
                 candidate_public_id=candidate_public_id,
                 assignment_public_id=assignment_public_id,
-            )
-        except DomainInvariantError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post(
-        "/webhooks/telegram",
-        response_model=TelegramWebhookResponse,
-        responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
-        tags=["Submissions"],
-    )
-    async def telegram_webhook(request: TelegramWebhookRequest) -> TelegramWebhookResponse:
-        if api_deps is None:
-            raise HTTPException(status_code=503, detail="api dependencies are not available")
-        try:
-            return await telegram_webhook_handler(
-                api_deps,
-                update_id=request.update_id,
-                candidate_public_id=request.candidate_public_id,
-                assignment_public_id=request.assignment_public_id,
-                file_id=request.file_id,
-                file_name=request.file_name,
             )
         except DomainInvariantError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

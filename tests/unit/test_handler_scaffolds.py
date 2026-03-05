@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.api.handlers import assignments, candidates, exports, feedback, status, submissions, telegram_webhook
+from app.api.handlers import assignments, candidates, exports, feedback, status, submissions
 from app.api.handlers.deps import ApiDeps
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
@@ -23,7 +23,6 @@ def test_api_handler_component_ids_are_stable() -> None:
     assert candidates.COMPONENT_ID == "api.create_candidate"
     assert assignments.COMPONENT_ID_CREATE == "api.create_assignment"
     assert assignments.COMPONENT_ID_LIST == "api.list_assignments"
-    assert telegram_webhook.COMPONENT_ID == "api.telegram_webhook"
 
 
 @pytest.mark.unit

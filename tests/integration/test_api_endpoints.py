@@ -7,9 +7,9 @@ from app.clients.stub import StubTelegramClient
 from app.api.http_app import build_app
 from app.roles import validate_role
 from app.services.bootstrap import build_runtime_container
+from app.domain.models import WorkItemClaim
+from app.workers.handlers import ingest_telegram
 from app.workers.handlers.deps import WorkerDeps
-from app.workers.handlers.factory import build_process_handler
-from app.workers.loop import WorkerLoop
 from tests.integration.api_seed import seed_candidate_and_assignment
 
 
@@ -144,12 +144,12 @@ def test_skeleton_api_endpoints_are_available() -> None:
 
 
 @pytest.mark.integration
-def test_telegram_webhook_ingest_path_is_idempotent() -> None:
+def test_telegram_polling_ingest_path_is_idempotent_and_links_raw() -> None:
     role = validate_role("api")
     container = build_runtime_container(role)
     app = build_app(
         role=role.name,
-        run_id="integration-api-webhook",
+        run_id="integration-api-telegram-poll",
         worker_loop=container.worker_loop,
         api_deps=container.api_deps,
     )
@@ -157,46 +157,51 @@ def test_telegram_webhook_ingest_path_is_idempotent() -> None:
     with TestClient(app) as client:
         candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
 
-        payload = {
-            "update_id": "upd-42",
-            "candidate_public_id": candidate_public_id,
-            "assignment_public_id": assignment_public_id,
-            "file_id": "tg-file-42",
-            "file_name": "task.py",
-        }
-        first = client.post("/webhooks/telegram", json=payload)
-        second = client.post("/webhooks/telegram", json=payload)
-
-        assert first.status_code == 200
-        assert second.status_code == 200
-        first_payload = first.json()
-        second_payload = second.json()
-        assert first_payload["created"] is True
-        assert second_payload["created"] is False
-        assert first_payload["submission_id"] == second_payload["submission_id"]
-
-        submission_id = first_payload["submission_id"]
         assert isinstance(container.telegram, StubTelegramClient)
+        container.telegram.updates.append(
+            {
+                "update_id": "upd-42",
+                "candidate_public_id": candidate_public_id,
+                "assignment_public_id": assignment_public_id,
+                "file_id": "tg-file-42",
+                "file_name": "task.py",
+            }
+        )
         container.telegram.files["tg-file-42"] = b"print('telegram')"
 
-        ingest_loop = WorkerLoop(
-            role="worker-ingest-telegram",
-            stage="raw",
+        deps = WorkerDeps(
             repository=container.repository,
-            process=build_process_handler(
-                "worker-ingest-telegram",
-                WorkerDeps(
-                    repository=container.repository,
-                    artifact_repository=container.artifact_repository,
-                    storage=container.storage,
-                    telegram=container.telegram,
-                    llm=container.llm,
-                ),
-            ),
+            artifact_repository=container.artifact_repository,
+            storage=container.storage,
+            telegram=container.telegram,
+            llm=container.llm,
         )
-        assert asyncio.run(ingest_loop.run_once()) is True
-        snapshot = asyncio.run(container.repository.get_submission(submission_id=submission_id))
+        first = asyncio.run(
+            ingest_telegram.process_claim(
+                deps,
+                claim=WorkItemClaim(item_id="poll-tick-1", stage="raw", attempt=1),
+            )
+        )
+        second = asyncio.run(
+            ingest_telegram.process_claim(
+                deps,
+                claim=WorkItemClaim(item_id="poll-tick-2", stage="raw", attempt=1),
+            )
+        )
+        assert first.success is True
+        assert "processed 1 telegram updates" in first.detail
+        assert second.success is True
+        assert "processed 0 telegram updates" in second.detail
+
+        source = asyncio.run(
+            container.repository.find_submission_source(
+                source_type="telegram",
+                source_external_id="upd-42",
+            )
+        )
+        assert source is not None
+        snapshot = asyncio.run(container.repository.get_submission(submission_id=source.submission_id))
         assert snapshot is not None
         assert snapshot.status == "uploaded"
-        raw_ref = asyncio.run(container.repository.get_artifact_ref(item_id=submission_id, stage="raw"))
+        raw_ref = asyncio.run(container.repository.get_artifact_ref(item_id=source.submission_id, stage="raw"))
         assert raw_ref.startswith("s3://raw/")
