@@ -333,4 +333,22 @@ def build_app(
             raise HTTPException(status_code=404, detail="submission not found")
         return pipeline_result
 
+    # Internal-only helper endpoint for local/dev artifact download.
+    # Allows reading objects by storage key (e.g. "normalized/<id>.json").
+    @app.get("/internal/artifacts/download")
+    async def download_artifact(key: str) -> Response:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+        try:
+            payload = api_deps.storage.get_bytes(key=key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="artifact not found")
+
+        media_type = "application/octet-stream"
+        if key.endswith(".json"):
+            media_type = "application/json"
+        elif key.endswith(".txt"):
+            media_type = "text/plain; charset=utf-8"
+        return Response(content=payload, media_type=media_type)
+
     return app
