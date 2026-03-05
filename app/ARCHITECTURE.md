@@ -84,7 +84,6 @@ Current key routes:
 - `POST /assignments`
 - `GET /assignments`
 - `POST /submissions`
-- `POST /webhooks/telegram`
 - `GET /submissions/{submission_id}`
 - `POST /submissions/file` (synthetic infra check)
 - `GET /feedback`
@@ -96,6 +95,7 @@ Current key routes:
 
 - `app/workers/runner.py` runs background polling loop.
 - Each tick calls `WorkerLoop.run_once()` from `app/workers/loop.py`.
+- Telegram ingest transport mode for MVP is polling via `worker-ingest-telegram`.
 - `run_once()` lifecycle:
   1. `claim_next(...)`
   2. `process(claim)` (role handler)

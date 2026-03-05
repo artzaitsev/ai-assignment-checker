@@ -15,7 +15,7 @@ class NormalizedArtifact(BaseModel):
     submission_public_id: str
     assignment_public_id: str
     # Which ingress path created the source payload.
-    source_type: Literal["api_upload", "telegram_webhook"]
+    source_type: Literal["api_upload", "telegram"]
     # Canonical text used as LLM input after format-specific extraction.
     content_markdown: str
     # Free-form trace data from normalization (parser, mime, warnings, etc.).

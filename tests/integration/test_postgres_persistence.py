@@ -145,13 +145,13 @@ def test_source_tracking_and_idempotency_for_api_and_telegram() -> None:
             tg = await repo.create_submission_with_source(
                 candidate_public_id=candidate,
                 assignment_public_id=assignment,
-                source_type="telegram_webhook",
+                source_type="telegram",
                 source_external_id="update-11",
                 initial_status="telegram_update_received",
                 metadata_json={"update_id": "11", "file_id": "f-11"},
             )
             source = await repo.find_submission_source(
-                source_type="telegram_webhook",
+                source_type="telegram",
                 source_external_id="update-11",
             )
             assert tg.created is True

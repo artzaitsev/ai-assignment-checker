@@ -65,7 +65,7 @@ Current API onboarding flow:
 - `POST /assignments` creates assignment metadata.
 - `GET /assignments` lists assignments (active by default).
 - `POST /submissions` requires `candidate_public_id` and `assignment_public_id`.
-- `POST /webhooks/telegram` stores Telegram intake updates idempotently by `update_id`.
+- Telegram intake is performed by `worker-ingest-telegram` via polling.
 
 Public ID contracts:
 

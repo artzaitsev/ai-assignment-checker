@@ -83,7 +83,7 @@ CREATE INDEX submissions_assignment_idx ON submissions (assignment_id);
 CREATE TABLE submission_sources (
   id BIGSERIAL PRIMARY KEY,
   submission_id BIGINT NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
-  source_type TEXT NOT NULL CHECK (source_type IN ('api_upload', 'telegram_webhook')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('api_upload', 'telegram')),
   source_external_id TEXT NOT NULL,
   source_payload_ref TEXT,
   metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
