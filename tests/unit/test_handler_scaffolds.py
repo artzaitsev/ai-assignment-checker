@@ -161,6 +161,13 @@ def test_handlers_execute_skeleton_flow() -> None:
         assert isinstance(repro, dict)
         assert repro["chain_version"] == "chain:v1"
         assert repro["spec_version"] == "chain-spec:v1"
+        criteria_payload = repository.evaluations[0]["criteria_scores_json"]
+        assert isinstance(criteria_payload, dict)
+        snapshot = criteria_payload["_chain_snapshot"]
+        assert isinstance(snapshot, dict)
+        assert isinstance(snapshot.get("chain_digest"), str)
+        assert snapshot.get("mismatch_policy") == "warn-only"
+        assert isinstance(snapshot.get("resolved_chain_spec"), dict)
 
     asyncio.run(_run())
 
@@ -366,3 +373,77 @@ def test_evaluate_handler_returns_artifact_missing_when_assignment_absent() -> N
         assert result.error_code == "artifact_missing"
 
     asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_evaluate_handler_warns_on_chain_digest_mismatch_and_continues(caplog: pytest.LogCaptureFixture) -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=llm,
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="A", last_name="B")
+        assignment = await repository.create_assignment(title="Title", description="Desc")
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="s-mismatch",
+            initial_status="normalized",
+        )
+        artifact_repository.save_normalized(
+            submission_id=created.submission_id,
+            artifact=NormalizedArtifact(
+                submission_public_id=created.submission_id,
+                assignment_public_id=assignment.assignment_public_id,
+                source_type="api_upload",
+                content_markdown="# normalized",
+                normalization_metadata={"producer": "test"},
+            ),
+        )
+        await repository.link_artifact(
+            item_id=created.submission_id,
+            stage="normalized",
+            artifact_ref=f"normalized/{created.submission_id}.json",
+            artifact_version="normalized:v1",
+        )
+        await repository.persist_evaluation(
+            submission_id=created.submission_id,
+            score_1_10=5,
+            criteria_scores_json={
+                "items": [],
+                "_chain_snapshot": {
+                    "chain_digest": "stale-digest",
+                    "resolved_chain_spec": {},
+                    "mismatch_policy": "warn-only",
+                },
+            },
+            organizer_feedback_json={"strengths": [], "issues": [], "recommendations": []},
+            candidate_feedback_json={"summary": "", "what_went_well": [], "what_to_improve": []},
+            ai_assistance_likelihood=0.1,
+            ai_assistance_confidence=0.2,
+            reproducibility_subset={
+                "chain_version": "chain:v1",
+                "spec_version": "chain-spec:v1",
+                "model": "model:v1",
+                "response_language": "ru",
+            },
+        )
+
+        result = await evaluate.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=created.submission_id, stage="llm-output", attempt=2),
+        )
+        assert result.success is True
+
+    with caplog.at_level("WARNING", logger="runtime"):
+        asyncio.run(_run())
+    assert "evaluation chain snapshot mismatch; continuing due to warn-only policy" in caplog.text
