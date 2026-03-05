@@ -1,0 +1,66 @@
+﻿spec_version: chain-spec:v1
+chain_version: chain:tguds1:v1
+model: model:deepseek:v1
+
+runtime:
+  temperature: 0.1
+  seed: 42
+  response_language: ru
+
+# TGUDS-1 rubric (4 questions, total 10)
+rubric:
+  criteria:
+    - id: q1_clients
+      description: >
+        Вопрос 1: критика схемы clients. Ожидается: (1) birth_date вместо age,
+        (2) PK/FK/UNIQUE (client_id PK, login UNIQUE, city_id FK), (3) контакты.
+      weight: 0.30
+    - id: q2_price_history
+      description: >
+        Вопрос 2: историчность цены. Ожидается: отдельная таблица истории цен (item_prices),
+        период действия (valid_from/valid_to или аналог), логика "новая цена = новая запись" (SCD2).
+      weight: 0.30
+    - id: q3_sql_fix
+      description: >
+        Вопрос 3: исправление SQL. Ожидается: IS NULL вместо = NULL, HAVING для SUM,
+        условие SUM(salary) > 100000, корректные JOIN/GROUP BY/фильтрация по городу.
+      weight: 0.30
+    - id: q4_pencil
+      description: >
+        Вопрос 4: загадка про карандаш. Ожидается объяснение: "карандаш у стены/вплотную к стене".
+      weight: 0.10
+
+prompts:
+  system: |
+    Ты  строгий проверяющий.
+    Проверяй ответы студента по рубрике TGUDS-1 (4 вопроса).
+    Верни ТОЛЬКО JSON без markdown и без текста вокруг.
+
+  user_template: |
+    Язык ответа: {{runtime.response_language}}
+
+    Рубрика (4 вопроса):
+    - Q1 (0-3): birth_date вместо age; PK/FK/UNIQUE; контакты
+    - Q2 (0-3): item_prices; valid_from/valid_to; новая цена = новая запись
+    - Q3 (0-3): IS NULL; HAVING; SUM(salary) > 100000; корректные join/group by/город
+    - Q4 (0-1): "карандаш у стены"
+
+    Ответ студента:
+    <<<
+    {{normalized.content_markdown}}
+    >>>
+
+llm_response:
+  type: json
+  required:
+    - score_1_10
+    - verdict
+    - mistakes
+    - recommendations
+    - rationale
+  properties:
+    score_1_10: { type: integer, minimum: 1, maximum: 10 }
+    verdict: { type: string, enum: ["pass", "needs_fix", "fail"] }
+    mistakes: { type: array, items: { type: string } }
+    recommendations: { type: array, items: { type: string } }
+    rationale: { type: string }
