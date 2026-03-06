@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
 from app.domain.dto import BuildFeedbackCommand
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.models import (
@@ -69,6 +70,22 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             external_message_id = deps.telegram.send_text(
                 chat_id=chat_id,
                 message=feedback.message_text,
+            )
+        except TelegramRetryableError as exc:
+            error_code = resolve_stage_error(stage="exports", code="delivery_transport_failed")
+            return ProcessResult(
+                success=False,
+                detail=str(exc),
+                error_code=error_code,
+                retry_classification=classify_error(error_code),
+            )
+        except TelegramNonRetryableError as exc:
+            error_code = resolve_stage_error(stage="exports", code="validation_error")
+            return ProcessResult(
+                success=False,
+                detail=str(exc),
+                error_code=error_code,
+                retry_classification=classify_error(error_code),
             )
         except Exception as exc:  # pragma: no cover - concrete client behavior
             error_code = resolve_stage_error(stage="exports", code="delivery_transport_failed")

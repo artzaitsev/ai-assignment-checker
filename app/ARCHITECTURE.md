@@ -57,7 +57,7 @@
 - `app/clients`
   - Адаптеры внешних интеграций (storage, Telegram, LLM).
   - В `INTEGRATION_MODE=stub` используются non-network stubs.
-  - В `INTEGRATION_MODE=real` для storage используется реальный S3-совместимый адаптер (`app/clients/s3.py`), при этом SDK-вызовы остаются изолированы в слое `clients`.
+  - В `INTEGRATION_MODE=real` рантайм подключает реальные адаптеры по role/wiring (включая S3 и Telegram), при этом SDK-вызовы остаются изолированы в слое `clients`.
 
 ## 3) Направление зависимостей (строгое правило)
 
@@ -176,7 +176,7 @@ If claim_next returns None -> return did_work=False (idle/backoff path in runner
 
 ## 5) Skeleton mode (текущее состояние)
 
-- Адаптеры stub-овые, реальных сетевых вызовов нет.
+- В `INTEGRATION_MODE=stub` адаптеры детерминированно stub-овые.
 - Worker-роли работают в непрерывном фоне (polling loop).
 - `/ready` включает состояние runtime-воркера и счетчики:
   - `worker_loop_enabled`
@@ -196,7 +196,7 @@ If claim_next returns None -> return did_work=False (idle/backoff path in runner
 Для ясности по режимам интеграции:
 
 - `INTEGRATION_MODE=stub`: skeleton-поведение, без реальных внешних вызовов.
-- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; для storage подключается S3-совместимый клиент через `app/services/bootstrap.py`.
+- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; для storage подключается S3-совместимый клиент, для Telegram — реальный Bot API клиент через `app/services/bootstrap.py`.
 
 ## 6) Где реализовывать новую логику
 

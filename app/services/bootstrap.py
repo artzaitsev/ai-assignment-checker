@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from app.api.handlers.deps import ApiDeps
 from app.clients.s3 import build_s3_storage_client
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
+from app.clients.telegram import RealTelegramClient
 from app.domain.contracts import ArtifactRepository, LLMClient, StorageClient, TelegramClient, WorkRepository
 from app.lib.artifacts import build_artifact_repository
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
@@ -17,6 +18,7 @@ from app.services.runtime_settings import (
     database_settings_from_env,
     integration_mode_from_env,
     s3_settings_from_env,
+    telegram_bot_settings_from_env,
     telegram_link_settings_from_env,
 )
 from app.workers.handlers.deps import WorkerDeps
@@ -124,7 +126,12 @@ def _build_storage_client(*, integration_mode: str) -> StorageClient:
 
 
 def _build_telegram_client(*, integration_mode: str) -> TelegramClient:
-    del integration_mode
+    if integration_mode == INTEGRATION_MODE_REAL:
+        telegram_settings = telegram_bot_settings_from_env()
+        return RealTelegramClient(
+            bot_token=telegram_settings.bot_token,
+            api_base_url=telegram_settings.api_base_url,
+        )
     return StubTelegramClient()
 
 

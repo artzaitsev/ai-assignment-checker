@@ -6,6 +6,7 @@ from app.api.handlers import assignments, candidates, exports, feedback, status,
 from app.api.handlers.deps import ApiDeps
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
+from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
 from app.lib.artifacts import build_artifact_repository
 from app.lib.artifacts.types import NormalizedArtifact
 from app.domain.models import (
@@ -154,6 +155,117 @@ def test_ingest_telegram_handler_sends_standard_help_for_unsupported_events() ->
         assert telegram.sent_texts[0][1].startswith("Я помогу Вам начать подачу заявки")
         assert repository.submissions == {}
         assert storage.writes == []
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_uses_next_offset_from_stream_cursor() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
+    )
+
+    async def _run() -> None:
+        await repository.set_stream_cursor(stream=ingest_telegram.TELEGRAM_UPDATES_STREAM, cursor="41")
+        claim = WorkItemClaim(item_id="poll-tick-4", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is True
+        assert telegram.last_poll_offset == "42"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_maps_retryable_telegram_errors() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    llm = StubLLMClient()
+
+    class _FailingTelegramClient:
+        def poll_events(self, *, timeout: int = 30, offset: str | None = None) -> list[TelegramInboundEvent]:
+            del timeout, offset
+            raise TelegramRetryableError("temporary network issue")
+
+        def send_text(self, *, chat_id: str, message: str) -> str | None:
+            del chat_id, message
+            return None
+
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=_FailingTelegramClient(),
+        llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
+    )
+
+    async def _run() -> None:
+        claim = WorkItemClaim(item_id="poll-tick-5", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is False
+        assert result.error_code == "telegram_file_fetch_failed"
+        assert result.retry_classification == "recoverable"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_maps_non_retryable_telegram_errors() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    llm = StubLLMClient()
+
+    class _FailingTelegramClient:
+        def poll_events(self, *, timeout: int = 30, offset: str | None = None) -> list[TelegramInboundEvent]:
+            del timeout, offset
+            raise TelegramNonRetryableError("invalid bot token")
+
+        def send_text(self, *, chat_id: str, message: str) -> str | None:
+            del chat_id, message
+            return None
+
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=_FailingTelegramClient(),
+        llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
+    )
+
+    async def _run() -> None:
+        claim = WorkItemClaim(item_id="poll-tick-6", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is False
+        assert result.error_code == "validation_error"
+        assert result.retry_classification == "terminal"
 
     asyncio.run(_run())
 

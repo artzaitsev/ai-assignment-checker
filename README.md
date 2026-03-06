@@ -28,7 +28,7 @@ AI Assignment Checker — сервис для автоматизированно
 Направление зависимостей: `api/services/workers -> domain contracts`, а инфраструктура подключается в bootstrap. См. `app/ARCHITECTURE.md`.
 Точки расширения компонентов для будущей бизнес-логики перечислены в `app/COMPONENTS.md`.
 
-Worker-роли в skeleton mode запускают фоновый polling loop. Каждый тик выполняет claim -> process -> finalize с no-op-safe хендлерами и stub-зависимостями (реальных внешних вызовов пока нет).
+Worker-роли в skeleton mode запускают фоновый polling loop. Каждый тик выполняет claim -> process -> finalize с no-op-safe хендлерами. По умолчанию (`INTEGRATION_MODE=stub`) зависимости детерминированно stub-овые; в `INTEGRATION_MODE=real` используются реальные интеграции по role/wiring (в том числе Telegram и S3).
 
 Readiness теперь включает статус worker-loop и счетчики через `/ready`:
 
@@ -78,6 +78,12 @@ curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
 - `TELEGRAM_LINK_SIGNING_SECRET` (HMAC-секрет для подписи токена входа)
 - `TELEGRAM_LINK_TTL_SECONDS` (время жизни токена в секундах)
 
+Операционный E2E-паттерн для Telegram интеграции:
+
+- Подготовка и startup-проверки (`--dry-run-startup`) выполняются до live-трафика.
+- Перед live-проверкой допускается operator-assisted checkpoint: вручную подготовить канал/бота и env.
+- После подтверждения setup выполняется проверка polling -> обработка -> outbound send и просмотр логов на ошибки.
+
 Контракты публичных ID:
 
 - candidate: `cand_<ULID>`
@@ -111,7 +117,7 @@ Swagger/OpenAPI доступен по стандартным endpoint FastAPI (`
 
 - уже используются рантаймом/тестами;
 - уже присутствуют в postgres-сервисе docker-compose;
-- потребуются после замены stub-ов на реальные интеграции (S3, Telegram, LLM).
+- используются рантаймом в `INTEGRATION_MODE=real` (S3, Telegram) или зарезервированы под следующие инкременты (LLM).
 
 ### Режим валидации runtime-конфига
 
@@ -125,6 +131,8 @@ Swagger/OpenAPI доступен по стандартным endpoint FastAPI (`
 - `worker-normalize`: `DATABASE_URL`, `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
 - `worker-evaluate`: `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`
 - `worker-deliver`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+
+Опционально поддерживается `TELEGRAM_BOT_API_BASE_URL` (по умолчанию `https://api.telegram.org`); если задана, должна быть валидным `http(s)` URL.
 
 Опциональные/инфраструктурные переменные с валидными дефолтами не должны сами по себе валить старт.
 

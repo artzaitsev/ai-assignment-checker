@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 
+from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
+from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.models import ProcessResult, WorkItemClaim
 from app.domain.use_cases.telegram_entry_links import build_candidate_apply_link, sign_entry_token
 from app.workers.handlers.deps import WorkerDeps
@@ -20,7 +23,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     del claim
     try:
         last_update_id = await deps.repository.get_stream_cursor(stream=TELEGRAM_UPDATES_STREAM)
-        events = deps.telegram.poll_events(timeout=30, offset=last_update_id)
+        events = deps.telegram.poll_events(timeout=30, offset=_build_poll_offset(last_update_id))
 
         if not events:
             return ProcessResult(
@@ -48,7 +51,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
                 signed_link = build_candidate_apply_link(settings=deps.telegram_link_settings, token=token)
                 deps.telegram.send_text(
                     chat_id=event.chat_id,
-                    message=f"Начните здесь: {signed_link}",
+                    message=_build_start_link_message(signed_link),
                 )
             else:
                 deps.telegram.send_text(chat_id=event.chat_id, message=UNSUPPORTED_EVENT_HELP)
@@ -67,6 +70,22 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             artifact_version=None,
         )
 
+    except TelegramRetryableError as exc:
+        error_code = resolve_stage_error(stage="raw", code="telegram_file_fetch_failed")
+        return ProcessResult(
+            success=False,
+            detail=str(exc),
+            error_code=error_code,
+            retry_classification=classify_error(error_code),
+        )
+    except TelegramNonRetryableError as exc:
+        error_code = resolve_stage_error(stage="raw", code="validation_error")
+        return ProcessResult(
+            success=False,
+            detail=str(exc),
+            error_code=error_code,
+            retry_classification=classify_error(error_code),
+        )
     except Exception as exc:
         return ProcessResult(
             success=False,
@@ -101,3 +120,17 @@ def _assignment_hint_from_event(event: object) -> str | None:
         return None
     hint = parts[1].strip()
     return hint or None
+
+
+def _build_poll_offset(last_update_id: str | None) -> str | None:
+    if last_update_id is None:
+        return None
+    try:
+        return str(int(last_update_id) + 1)
+    except ValueError:
+        return last_update_id
+
+
+def _build_start_link_message(link: str) -> str:
+    safe_link = escape(link, quote=True)
+    return f'Начните здесь: <a href="{safe_link}">Открыть форму</a>'

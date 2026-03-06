@@ -26,6 +26,7 @@ RUNTIME_ENV_KEYS = (
     "AWS_SECRET_ACCESS_KEY",
     "S3_REGION",
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_BOT_API_BASE_URL",
     "TELEGRAM_TOKEN",
     "LLM_API_KEY",
     "LLM_BASE_URL",
@@ -133,6 +134,19 @@ def test_alias_keys_fail_fast_in_strict_mode(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(ValueError, match="TELEGRAM_TOKEN"):
         validate_runtime_configuration_for_role(role_name="worker-ingest-telegram")
+
+
+@pytest.mark.unit
+def test_strict_mode_validates_telegram_api_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("INTEGRATION_MODE", "real")
+    monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "strict")
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_BOT_API_BASE_URL", "not-a-url")
+
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_API_BASE_URL"):
+        validate_runtime_configuration_for_role(role_name="worker-deliver")
 
 
 @pytest.mark.unit
