@@ -56,7 +56,8 @@
 
 - `app/clients`
   - Адаптеры внешних интеграций (storage, Telegram, LLM).
-  - В текущем состоянии используются non-network stubs.
+  - В `INTEGRATION_MODE=stub` используются non-network stubs.
+  - В `INTEGRATION_MODE=real` для storage используется реальный S3-совместимый адаптер (`app/clients/s3.py`), при этом SDK-вызовы остаются изолированы в слое `clients`.
 
 ## 3) Направление зависимостей (строгое правило)
 
@@ -191,6 +192,11 @@ If claim_next returns None -> return did_work=False (idle/backoff path in runner
 - `WORKER_POLL_INTERVAL_MS` (по умолчанию `200`)
 - `WORKER_IDLE_BACKOFF_MS` (по умолчанию `1000`)
 - `WORKER_ERROR_BACKOFF_MS` (по умолчанию `2000`)
+
+Для ясности по режимам интеграции:
+
+- `INTEGRATION_MODE=stub`: skeleton-поведение, без реальных внешних вызовов.
+- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; для storage подключается S3-совместимый клиент через `app/services/bootstrap.py`.
 
 ## 6) Где реализовывать новую логику
 
@@ -352,4 +358,3 @@ from fastapi.responses import JSONResponse
 def prepare_export(...) -> JSONResponse:
     return JSONResponse({"ok": True})
 ```
-

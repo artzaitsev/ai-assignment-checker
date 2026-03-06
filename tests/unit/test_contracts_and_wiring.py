@@ -15,8 +15,21 @@ def _clear_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "INTEGRATION_MODE",
         "DATABASE_URL",
         "RUNTIME_VALIDATION_MODE",
+        "S3_ENDPOINT_URL",
+        "S3_BUCKET",
+        "S3_ACCESS_KEY_ID",
+        "S3_SECRET_ACCESS_KEY",
+        "S3_REGION",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def _set_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("S3_BUCKET", "artifacts")
+    monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-key")
+    monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret")
+    monkeypatch.setenv("S3_REGION", "us-east-1")
 
 
 @pytest.mark.unit
@@ -104,6 +117,7 @@ def test_real_mode_uses_postgres_repository_when_database_url_present(monkeypatc
     _clear_mode_env(monkeypatch)
     monkeypatch.setenv("INTEGRATION_MODE", "real")
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    _set_s3_env(monkeypatch)
 
     role = validate_role("api")
     container = build_runtime_container(role)

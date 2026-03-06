@@ -5,6 +5,7 @@ import importlib
 import json
 from typing import Any
 
+from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.errors import DomainInvariantError
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.ids import new_assignment_public_id, new_candidate_public_id, new_submission_public_id
@@ -876,9 +877,19 @@ def _json_object(value: object) -> dict[str, object]:
 
 
 def _storage_key_from_ref(artifact_ref: str) -> str:
-    if "://" in artifact_ref:
-        return artifact_ref.split("://", maxsplit=1)[1]
-    return artifact_ref
+    if "://" not in artifact_ref:
+        return artifact_ref
+
+    remainder = artifact_ref.split("://", maxsplit=1)[1]
+    if any(remainder.startswith(prefix) for prefix in STORAGE_PREFIXES):
+        return remainder
+
+    if "/" in remainder:
+        candidate = remainder.split("/", maxsplit=1)[1]
+        if any(candidate.startswith(prefix) for prefix in STORAGE_PREFIXES):
+            return candidate
+
+    return remainder
 
 
 def _record_get(row: object, key: str) -> object | None:
