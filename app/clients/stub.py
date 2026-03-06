@@ -6,6 +6,7 @@ from hashlib import sha256
 from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.dto import LLMClientRequest, LLMClientResult
 from app.domain.models import TelegramInboundEvent
+import asyncio
 
 
 @dataclass
@@ -60,8 +61,9 @@ class StubTelegramClient:
 class StubLLMClient:
     calls: list[LLMClientRequest] = field(default_factory=list)
 
-    def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
+    async def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
         self.calls.append(request)
+        await asyncio.sleep(0.1)  # имитация сетевой задержки
         default_json: dict[str, object] = {
             "criteria": [
                 {"id": "correctness", "score": 8, "reason": "Core logic is mostly correct"},

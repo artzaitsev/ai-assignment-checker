@@ -14,7 +14,9 @@ from app.logging_setup import configure_logging
 from app.roles import SUPPORTED_ROLES, validate_role
 from app.services.bootstrap import build_runtime_container
 from app.services.runtime_settings import integration_mode_from_env, validate_runtime_configuration_for_role
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def _default_port(role: str) -> int:
     if role == "api":

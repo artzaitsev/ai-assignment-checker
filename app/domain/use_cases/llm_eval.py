@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+logger = logging.getLogger(__name__)
 
 from app.domain.contracts import LLMClient
 from app.domain.dto import EvaluateSubmissionCommand, EvaluateSubmissionResult, LLMClientRequest
@@ -10,12 +12,15 @@ from app.domain.scoring import CriteriaScore, deterministic_score_1_10
 COMPONENT_ID = "domain.llm.evaluate"
 
 
-def evaluate_submission(
+async def evaluate_submission(
     cmd: EvaluateSubmissionCommand,
     *,
     llm: LLMClient,
 ) -> EvaluateSubmissionResult:
     """Evaluate normalized content using chain spec and deterministic scoring."""
+    print("=== evaluate_submission called ===")
+    logger.info(f"Starting evaluation for submission {cmd.submission_id}")
+
     prompt_inputs: dict[str, object] = {
         "assignment": {
             "title": cmd.assignment_title,
@@ -31,7 +36,7 @@ def evaluate_submission(
         spec=cmd.chain_spec,
     )
 
-    llm_result = llm.evaluate(
+    llm_result = await llm.evaluate(
         LLMClientRequest(
             system_prompt=cmd.chain_spec.prompts.system,
             user_prompt=user_prompt,
@@ -41,18 +46,25 @@ def evaluate_submission(
             response_language=cmd.chain_spec.runtime.response_language,
         )
     )
+    print(f"LLM raw text: {llm_result.raw_text}")
+    logger.info(f"LLM raw text: {llm_result.raw_text}")
+    logger.info(f"LLM response received, length: {len(llm_result.raw_text)}")
+    logger.debug(f"LLM raw text: {llm_result.raw_text[:500]}...")  # первые 500 символов
 
     payload = llm_result.raw_json
     if payload is None:
         try:
             loaded = json.loads(llm_result.raw_text)
         except json.JSONDecodeError as exc:
+            logger.exception("Failed to parse LLM response as JSON")
             raise ValueError("llm output is not valid JSON") from exc
         if not isinstance(loaded, dict):
             raise ValueError("llm output root must be JSON object")
         payload = loaded
+        logger.info("LLM response parsed as JSON successfully")
 
     validate_llm_response(payload=payload, schema=cmd.chain_spec.llm_response)
+    logger.info("LLM response passed schema validation")
 
     criteria_items_raw = payload.get("criteria")
     if not isinstance(criteria_items_raw, list):
@@ -67,9 +79,10 @@ def evaluate_submission(
         score = entry.get("score")
         reason = entry.get("reason")
         if not isinstance(criterion_id, str) or criterion_id not in rubric_weights:
+            logger.warning(f"Invalid criteria id: {criterion_id}")
             raise ValueError("criteria entry id is invalid")
-        if not isinstance(score, int):
-            raise ValueError("criteria entry score must be integer")
+        if not isinstance(score, int) or not (1 <= score <= 10):
+            raise ValueError("score must be integer 1-10")
         if not isinstance(reason, str):
             raise ValueError("criteria entry reason must be string")
         criteria_for_score.append(
@@ -102,10 +115,10 @@ def evaluate_submission(
             raise ValueError(f"ai_assistance.{field} is required by chain policy")
     likelihood = ai_assistance.get("likelihood")
     confidence = ai_assistance.get("confidence")
-    if not isinstance(likelihood, (int, float)):
-        raise ValueError("ai_assistance.likelihood must be number")
-    if not isinstance(confidence, (int, float)):
-        raise ValueError("ai_assistance.confidence must be number")
+    if not isinstance(likelihood, (int, float)) or not (0 <= likelihood <= 1):
+        raise ValueError("ai_assistance.likelihood must be a number between 0 and 1")
+    if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 1):
+        raise ValueError("ai_assistance.confidence must be a number between 0 and 1")
 
     return EvaluateSubmissionResult(
         model=cmd.chain_spec.model,
@@ -130,4 +143,5 @@ def evaluate_submission(
             "model": cmd.chain_spec.model,
             "response_language": cmd.chain_spec.runtime.response_language,
         },
+        raw_output=llm_result.raw_text,
     )

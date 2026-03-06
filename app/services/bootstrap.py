@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -25,9 +25,13 @@ from app.workers.handlers.deps import WorkerDeps
 from app.workers.handlers.factory import build_process_handler
 from app.workers.loop import WorkerLoop
 from app.workers.roles import ROLE_TO_STAGE
+
+from app.clients.openai_compatible import OpenAICompatibleClient
+
 from app.workers.telegram_polling_loop import TelegramPollingWorkerLoop
 
 TELEGRAM_INGEST_SINGLETON_LOCK_KEY = 6_243_911_007
+
 
 
 @dataclass
@@ -66,10 +70,25 @@ def build_runtime_container(role: RuntimeRole, *, integration_mode: str | None =
 
     storage = _build_storage_client(integration_mode=resolved_integration_mode)
     artifact_repository = build_artifact_repository(storage=storage)
+
+    telegram = StubTelegramClient()
+  
     telegram = _build_telegram_client(integration_mode=resolved_integration_mode)
     llm = _build_llm_client(integration_mode=resolved_integration_mode)
     telegram_link_settings = telegram_link_settings_from_env()
     apply_session_settings = apply_session_settings_from_env()
+
+  # Actual LLM
+    llm_api_key = os.getenv("LLM_API_KEY")
+    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1/chat/completions")
+    llm_timeout = float(os.getenv("LLM_TIMEOUT", "60"))
+  
+
+    if llm_api_key:
+        llm = OpenAICompatibleClient(api_key=llm_api_key, base_url=llm_base_url, timeout=llm_timeout)
+    else:
+        llm = StubLLMClient()
+
     api_deps = ApiDeps(
         repository=repository,
         artifact_repository=artifact_repository,
