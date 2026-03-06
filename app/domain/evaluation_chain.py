@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -142,6 +143,41 @@ def validate_llm_response(*, payload: dict[str, object], schema: dict[str, objec
     _validate_schema_node(payload, schema, path="$")
 
 
+def resolved_chain_spec_payload(*, spec: EvaluationChainSpec) -> dict[str, object]:
+    return {
+        "spec_version": spec.spec_version,
+        "chain_version": spec.chain_version,
+        "model": spec.model,
+        "runtime": {
+            "temperature": spec.runtime.temperature,
+            "seed": spec.runtime.seed,
+            "response_language": spec.runtime.response_language,
+        },
+        "rubric": {
+            "criteria": [
+                {"id": item.id, "description": item.description, "weight": item.weight}
+                for item in spec.rubric.criteria
+            ],
+            "ai_assistance_policy": {
+                "enabled": spec.rubric.ai_assistance_policy.enabled,
+                "affects_score": spec.rubric.ai_assistance_policy.affects_score,
+                "require_fields": list(spec.rubric.ai_assistance_policy.require_fields),
+            },
+        },
+        "prompts": {
+            "system": spec.prompts.system,
+            "user_template": spec.prompts.user_template,
+        },
+        "llm_response": dict(spec.llm_response),
+    }
+
+
+def chain_spec_digest(*, spec: EvaluationChainSpec) -> str:
+    payload = resolved_chain_spec_payload(spec=spec)
+    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _validate_llm_response_spec(schema: dict[str, object]) -> None:
     if schema.get("type") != "json":
         raise ValueError("llm_response.type must be 'json'")
@@ -240,26 +276,13 @@ def _validate_schema_node(value: object, schema: dict[str, object], *, path: str
 
 
 def _spec_to_mapping(spec: EvaluationChainSpec) -> dict[str, object]:
+    payload = resolved_chain_spec_payload(spec=spec)
     return {
-        "spec_version": spec.spec_version,
-        "chain_version": spec.chain_version,
-        "model": spec.model,
-        "runtime": {
-            "temperature": spec.runtime.temperature,
-            "seed": spec.runtime.seed,
-            "response_language": spec.runtime.response_language,
-        },
-        "rubric": {
-            "criteria": [
-                {"id": item.id, "description": item.description, "weight": item.weight}
-                for item in spec.rubric.criteria
-            ],
-            "ai_assistance_policy": {
-                "enabled": spec.rubric.ai_assistance_policy.enabled,
-                "affects_score": spec.rubric.ai_assistance_policy.affects_score,
-                "require_fields": list(spec.rubric.ai_assistance_policy.require_fields),
-            },
-        },
+        "spec_version": payload["spec_version"],
+        "chain_version": payload["chain_version"],
+        "model": payload["model"],
+        "runtime": payload["runtime"],
+        "rubric": payload["rubric"],
     }
 
 

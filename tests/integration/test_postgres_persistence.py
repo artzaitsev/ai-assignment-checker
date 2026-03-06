@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
+from app.clients.s3 import build_s3_storage_client
 from app.domain.errors import DomainInvariantError
+from app.domain.models import CandidateSourceType
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from tests.integration.postgres_test_utils import apply_down, apply_up, require_postgres, reset_public_schema
 
@@ -142,22 +145,34 @@ def test_source_tracking_and_idempotency_for_api_and_telegram() -> None:
             assert api_second.created is False
             assert api_first.submission_id == api_second.submission_id
 
-            tg = await repo.create_submission_with_source(
+            resolved = await repo.get_or_create_candidate_by_source(
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+                source_external_id="chat-11",
+                first_name="Should",
+                last_name="NotCreate",
+                metadata_json={"chat_id": "chat-11"},
+            )
+            assert resolved.candidate_public_id != candidate
+            resolved_again = await repo.get_or_create_candidate_by_source(
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+                source_external_id="chat-11",
+                first_name="Ignored",
+                last_name="Ignored",
+                metadata_json={"chat_id": "chat-11"},
+            )
+            assert resolved_again.candidate_public_id == resolved.candidate_public_id
+            assert resolved_again.first_name == resolved.first_name
+            assert resolved_again.last_name == resolved.last_name
+            chat_external_id = await repo.find_candidate_source_external_id(
+                candidate_public_id=resolved.candidate_public_id,
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+            )
+            assert chat_external_id == "chat-11"
+            original_candidate_chat_external_id = await repo.find_candidate_source_external_id(
                 candidate_public_id=candidate,
-                assignment_public_id=assignment,
-                source_type="telegram_webhook",
-                source_external_id="update-11",
-                initial_status="telegram_update_received",
-                metadata_json={"update_id": "11", "file_id": "f-11"},
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
             )
-            source = await repo.find_submission_source(
-                source_type="telegram_webhook",
-                source_external_id="update-11",
-            )
-            assert tg.created is True
-            assert source is not None
-            assert source.submission_id == tg.submission_id
-            assert source.metadata_json["file_id"] == "f-11"
+            assert original_candidate_chat_external_id is None
         finally:
             await manager.shutdown()
 
@@ -329,7 +344,169 @@ def test_reproducibility_metadata_persistence_contract() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.integration
+def test_artifact_link_persists_real_bucket_and_object_key() -> None:
+    dsn = require_postgres()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="artifact-link-1",
+                initial_status="uploaded",
+            )
+            artifact_ref = f"s3://real-bucket/raw/{created.submission_id}/input.txt"
+            await repo.link_artifact(
+                item_id=created.submission_id,
+                stage="raw",
+                artifact_ref=artifact_ref,
+                artifact_version=None,
+            )
+
+            pool = manager.pool
+            assert pool is not None
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT bucket, object_key FROM artifacts ORDER BY id DESC LIMIT 1"
+                )
+
+            assert row is not None
+            assert row["bucket"] == "real-bucket"
+            assert row["object_key"] == f"raw/{created.submission_id}/input.txt"
+            assert await repo.get_artifact_ref(item_id=created.submission_id, stage="raw") == artifact_ref
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_artifact_link_rejects_malformed_ref_without_persisting_row() -> None:
+    dsn = require_postgres()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="artifact-link-bad-ref",
+                initial_status="uploaded",
+            )
+
+            with pytest.raises(DomainInvariantError, match="invalid artifact reference"):
+                await repo.link_artifact(
+                    item_id=created.submission_id,
+                    stage="raw",
+                    artifact_ref="s3://real-bucket/tmp/not-allowed.txt",
+                    artifact_version=None,
+                )
+
+            pool = manager.pool
+            assert pool is not None
+            async with pool.acquire() as conn:
+                count = await conn.fetchval("SELECT COUNT(*) FROM artifacts")
+
+            assert count == 0
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_real_s3_artifact_link_round_trip_when_credentials_available() -> None:
+    dsn = require_postgres()
+    s3_settings = _require_real_s3_settings()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="artifact-link-real-s3",
+                initial_status="uploaded",
+            )
+
+            client = build_s3_storage_client(
+                endpoint_url=s3_settings["endpoint_url"],
+                bucket=s3_settings["bucket"],
+                access_key_id=s3_settings["access_key_id"],
+                secret_access_key=s3_settings["secret_access_key"],
+                region=s3_settings["region"],
+            )
+            object_key = f"raw/{created.submission_id}/artifact-metadata-real-bucket-key.txt"
+            payload = b"artifact-metadata-real-bucket-key"
+            artifact_ref = client.put_bytes(key=object_key, payload=payload)
+            assert client.get_bytes(key=object_key) == payload
+
+            await repo.link_artifact(
+                item_id=created.submission_id,
+                stage="raw",
+                artifact_ref=artifact_ref,
+                artifact_version=None,
+            )
+
+            pool = manager.pool
+            assert pool is not None
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT bucket, object_key FROM artifacts ORDER BY id DESC LIMIT 1"
+                )
+
+            assert row is not None
+            assert row["bucket"] == s3_settings["bucket"]
+            assert row["object_key"] == object_key
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
 async def _seed_candidate_assignment(repo: PostgresWorkRepository) -> tuple[str, str]:
     candidate = await repo.create_candidate(first_name="Seed", last_name="Candidate")
     assignment = await repo.create_assignment(title="Seed Assignment", description="seed")
     return candidate.candidate_public_id, assignment.assignment_public_id
+
+
+def _require_real_s3_settings() -> dict[str, str]:
+    endpoint_url = os.getenv("S3_ENDPOINT_URL", "").strip()
+    bucket = os.getenv("S3_BUCKET", "").strip()
+    access_key_id = os.getenv("S3_ACCESS_KEY_ID", "").strip()
+    secret_access_key = os.getenv("S3_SECRET_ACCESS_KEY", "").strip()
+    region = os.getenv("S3_REGION", "us-east-1").strip()
+
+    if not bucket or not access_key_id or not secret_access_key:
+        pytest.skip("real S3 credentials are not configured")
+
+    return {
+        "endpoint_url": endpoint_url,
+        "bucket": bucket,
+        "access_key_id": access_key_id,
+        "secret_access_key": secret_access_key,
+        "region": region,
+    }

@@ -119,20 +119,6 @@ class ExportResultsResponse(BaseModel):
     export_ref: str
 
 
-class TelegramWebhookRequest(BaseModel):
-    update_id: str = Field(min_length=1, max_length=128)
-    candidate_public_id: str = Field(pattern=CANDIDATE_ID_PATTERN)
-    assignment_public_id: str = Field(pattern=ASSIGNMENT_ID_PATTERN)
-    file_id: str = Field(min_length=1, max_length=256)
-    file_name: str | None = Field(default=None, min_length=1, max_length=256)
-
-
-class TelegramWebhookResponse(BaseModel):
-    submission_id: str = Field(pattern=SUBMISSION_ID_PATTERN)
-    state: str
-    created: bool
-
-
 class RunPipelineResponse(BaseModel):
     submission_id: str = Field(pattern=SUBMISSION_ID_PATTERN)
     state: str

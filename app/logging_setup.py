@@ -15,7 +15,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
         }
 
-        for key in ("role", "service", "run_id"):
+        for key in ("role", "service", "run_id", "integration_mode"):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

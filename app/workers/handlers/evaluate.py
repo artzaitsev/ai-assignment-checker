@@ -1,16 +1,20 @@
 from __future__ import annotations
+
+import logging
 import os
 from pydantic import ValidationError
 
-from app.domain.evaluation_chain import load_chain_spec
+from app.domain.evaluation_chain import chain_spec_digest, load_chain_spec, resolved_chain_spec_payload
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import EvaluateSubmissionCommand
-from app.domain.models import AssignmentSnapshot, ProcessResult, WorkItemClaim
+from app.domain.models import AssignmentSnapshot, ProcessResult, SubmissionFieldGroup, SubmissionListQuery, WorkItemClaim
 from app.domain.use_cases.llm_eval import evaluate_submission
 from app.workers.handlers.deps import WorkerDeps
 
 COMPONENT_ID = "worker.evaluate.process_claim"
 DEFAULT_CHAIN_SPEC_PATH = "app/eval/chains/chain.v1.yaml"
+CHAIN_MISMATCH_POLICY = "warn-only"
+logger = logging.getLogger("runtime")
 
 
 async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
@@ -31,6 +35,22 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         chain_spec_path = f"app/eval/chains/chain.{chain_version}.yaml"
         chain_spec = load_chain_spec(file_path=chain_spec_path)
 
+        current_chain_digest = chain_spec_digest(spec=chain_spec)
+        current_chain_payload = resolved_chain_spec_payload(spec=chain_spec)
+        previous_chain_digest = await _load_persisted_chain_digest(deps=deps, submission_id=claim.item_id)
+        if previous_chain_digest is not None and previous_chain_digest != current_chain_digest:
+            logger.warning(
+                "evaluation chain snapshot mismatch; continuing due to warn-only policy",
+                extra={
+                    "submission_id": claim.item_id,
+                    "stage": "llm-output",
+                    "mismatch_policy": CHAIN_MISMATCH_POLICY,
+                    "previous_chain_digest": previous_chain_digest,
+                    "current_chain_digest": current_chain_digest,
+                },
+            )
+
+        
 
         
         result = await evaluate_submission(
@@ -116,7 +136,14 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     await deps.repository.persist_evaluation(
         submission_id=claim.item_id,
         score_1_10=result.score_1_10,
-        criteria_scores_json=result.criteria_scores_json,
+        criteria_scores_json={
+            **result.criteria_scores_json,
+            "_chain_snapshot": {
+                "chain_digest": current_chain_digest,
+                "resolved_chain_spec": current_chain_payload,
+                "mismatch_policy": CHAIN_MISMATCH_POLICY,
+            },
+        },
         organizer_feedback_json=result.organizer_feedback_json,
         candidate_feedback_json=result.candidate_feedback_json,
         ai_assistance_likelihood=result.ai_assistance_likelihood,
@@ -150,6 +177,60 @@ async def _resolve_assignment(
 
     joined_ids = ", ".join(assignment_candidates)
     raise KeyError(f"assignment not found: {joined_ids}")
+
+
+async def _load_persisted_chain_digest(deps: WorkerDeps, *, submission_id: str) -> str | None:
+    items = await deps.repository.list_submissions(
+        query=SubmissionListQuery(
+            submission_ids=(submission_id,),
+            include=frozenset({SubmissionFieldGroup.EVALUATION}),
+            limit=1,
+            offset=0,
+        )
+    )
+    if not items:
+        return None
+
+    evaluation = items[0].evaluation
+    if evaluation is None:
+        return None
+    criteria = evaluation.criteria_scores_json
+    if not isinstance(criteria, dict):
+        return None
+    snapshot = criteria.get("_chain_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    digest = snapshot.get("chain_digest")
+    if not isinstance(digest, str) or not digest:
+        return None
+    return digest
+
+
+async def _load_persisted_chain_digest(deps: WorkerDeps, *, submission_id: str) -> str | None:
+    items = await deps.repository.list_submissions(
+        query=SubmissionListQuery(
+            submission_ids=(submission_id,),
+            include=frozenset({SubmissionFieldGroup.EVALUATION}),
+            limit=1,
+            offset=0,
+        )
+    )
+    if not items:
+        return None
+
+    evaluation = items[0].evaluation
+    if evaluation is None:
+        return None
+    criteria = evaluation.criteria_scores_json
+    if not isinstance(criteria, dict):
+        return None
+    snapshot = criteria.get("_chain_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    digest = snapshot.get("chain_digest")
+    if not isinstance(digest, str) or not digest:
+        return None
+    return digest
 
 def _format_candidate_feedback(candidate_json: dict) -> str:
     summary = candidate_json.get("summary", "")

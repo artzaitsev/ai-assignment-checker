@@ -7,11 +7,13 @@ import sys
 import uuid
 
 import uvicorn
+from dotenv import load_dotenv
 
 from app.api.http_app import build_app
 from app.logging_setup import configure_logging
 from app.roles import SUPPORTED_ROLES, validate_role
 from app.services.bootstrap import build_runtime_container
+from app.services.runtime_settings import integration_mode_from_env, validate_runtime_configuration_for_role
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -41,14 +43,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def create_runtime_app() -> object:
+    load_dotenv(override=False)
     role_name = os.getenv("APP_ROLE", "api")
     role = validate_role(role_name)
+    validate_runtime_configuration_for_role(role_name=role.name)
+    integration_mode = integration_mode_from_env()
     run_id = str(uuid.uuid4())
     configure_logging()
-    container = build_runtime_container(role)
+    container = build_runtime_container(role, integration_mode=integration_mode)
     return build_app(
         role=role.name,
         run_id=run_id,
+        integration_mode=integration_mode,
         worker_loop=container.worker_loop,
         api_deps=container.api_deps,
         on_startup=container.on_startup,
@@ -57,6 +63,7 @@ def create_runtime_app() -> object:
 
 
 def run(argv: list[str] | None = None) -> int:
+    load_dotenv(override=False)
     args = parse_args(argv)
 
     try:
@@ -71,19 +78,41 @@ def run(argv: list[str] | None = None) -> int:
     run_id = str(uuid.uuid4())
     logger = logging.getLogger("runtime")
 
+    try:
+        integration_mode = integration_mode_from_env()
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 2
+
     logger.info(
         "runtime initialized",
-        extra={"role": role.name, "service": role.name, "run_id": run_id},
+        extra={
+            "role": role.name,
+            "service": role.name,
+            "run_id": run_id,
+            "integration_mode": integration_mode,
+        },
     )
+
+    try:
+        validate_runtime_configuration_for_role(role_name=role.name)
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 2
 
     if args.dry_run_startup:
         logger.info(
             "dry-run startup complete",
-            extra={"role": role.name, "service": role.name, "run_id": run_id},
+            extra={
+                "role": role.name,
+                "service": role.name,
+                "run_id": run_id,
+                "integration_mode": integration_mode,
+            },
         )
         return 0
 
-    container = build_runtime_container(role)
+    container = build_runtime_container(role, integration_mode=integration_mode)
     port = args.port if args.port is not None else _default_port(role.name)
     if args.reload:
         os.environ["APP_ROLE"] = role.name
@@ -99,6 +128,7 @@ def run(argv: list[str] | None = None) -> int:
         app = build_app(
             role=role.name,
             run_id=run_id,
+            integration_mode=integration_mode,
             worker_loop=container.worker_loop,
             api_deps=container.api_deps,
             on_startup=container.on_startup,

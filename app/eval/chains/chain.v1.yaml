@@ -10,16 +10,16 @@ runtime:
 rubric:
   criteria:
     - id: correctness
-      description: Correctness of solution and logic.
+      description: Корректность решения и логики.
       weight: 0.35
     - id: completeness
-      description: Coverage of assignment requirements.
+      description: Полнота покрытия требований задания.
       weight: 0.25
     - id: code_quality
-      description: Code quality, readability, and structure.
+      description: Качество кода, читаемость и структура.
       weight: 0.20
     - id: edge_cases
-      description: Handling of edge and failure cases.
+      description: Обработка граничных и ошибочных случаев.
       weight: 0.20
   ai_assistance_policy:
     enabled: true
@@ -31,17 +31,17 @@ rubric:
 
 prompts:
   system: |
-    You are an evaluator. Return strict JSON only.
+    Вы выступаете в роли проверяющего. Возвращайте стро JSON.
   user_template: |
-    Response language: {{runtime.response_language}}
+    Язык ответа: {{runtime.response_language}}
 
-    Assignment title:
+    Название задания:
     {{assignment.title}}
 
-    Assignment description:
+    Описание задания:
     {{assignment.description}}
 
-    Submission content:
+    Содержимое работы:
     {{normalized.content_markdown}}
 
     Rubric criteria:

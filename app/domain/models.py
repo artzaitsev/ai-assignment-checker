@@ -25,6 +25,10 @@ class ProcessResult:
     retry_classification: RetryClassification | None = None
 
 
+class CandidateSourceType(StrEnum):
+    TELEGRAM_CHAT = "telegram_chat"
+
+
 @dataclass(frozen=True)
 class SubmissionSnapshot:
     submission_id: str
@@ -72,6 +76,29 @@ class AssignmentSnapshot:
     title: str
     description: str
     is_active: bool
+
+
+@dataclass(frozen=True)
+class TelegramInboundEvent:
+    update_id: str
+    chat_id: str
+    telegram_user_id: str
+    kind: str
+    command: str | None
+    text: str | None
+
+
+@dataclass(frozen=True)
+class TelegramLinkSettings:
+    public_web_base_url: str
+    signing_secret: str
+    ttl_seconds: int
+
+
+@dataclass(frozen=True)
+class ApplySessionSettings:
+    signing_secret: str
+    ttl_seconds: int
 
 
 class SubmissionFieldGroup(StrEnum):

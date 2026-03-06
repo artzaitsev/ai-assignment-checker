@@ -1,82 +1,88 @@
-# Architecture Layer Boundaries
+# Границы архитектурных слоев
 
-This document explains how the runtime is organized, where business logic should live, and where to make changes safely.
+Этот документ объясняет, как устроен рантайм, где должна жить бизнес-логика и где безопасно вносить изменения.
 
-## 1) Runtime Overview
+## 1) Обзор рантайма
 
-Entrypoint: `app/main.py`
+Точка входа: `app/main.py`
 
-- The process starts with `--role`.
-- Supported roles:
+- Процесс запускается с флагом `--role`.
+- Поддерживаемые роли:
   - `api`
   - `worker-ingest-telegram`
   - `worker-normalize`
   - `worker-evaluate`
   - `worker-deliver`
-- `migrator` is external (one-shot service) and not an app role.
+- `migrator` является внешним one-shot сервисом и не относится к app role.
 
-`app/main.py` validates role, builds dependencies via `app/services/bootstrap.py`, and starts FastAPI app from `app/api/http_app.py`.
+`app/main.py` загружает `.env` (если файл присутствует), валидирует роль, выполняет fail-fast валидацию runtime-конфига и затем собирает зависимости через `app/services/bootstrap.py` перед запуском FastAPI-приложения из `app/api/http_app.py`.
 
-## 2) Layers and Responsibilities
+Валидация runtime-конфига управляется `RUNTIME_VALIDATION_MODE`:
+
+- `dev` (по умолчанию): локально-дружественный режим со stub-ориентированными дефолтами.
+- `strict`: fail-fast только по обязательным зависимостям активной роли (например, БД и required integration envs для конкретного worker/api role).
+
+## 2) Слои и ответственность
 
 - `app/api`
-  - HTTP transport only (routes, request/response mapping, readiness/health).
-  - Calls handlers in `app/api/handlers`.
-  - Should not contain core business rules.
+  - Только HTTP-транспорт (роуты, маппинг request/response, readiness/health).
+  - Вызывает хендлеры из `app/api/handlers`.
+  - Не должен содержать доменную логику.
 
 - `app/services`
-  - Dependency wiring/bootstrap.
-  - Builds runtime container and injects contracts/adapters.
+  - Сборка зависимостей/bootstrap.
+  - Формирует runtime container с помощью ручного DI.
 
 - `app/lib`
-  - Infrastructure support libraries shared by adapters/handlers.
-  - `app/lib/artifacts/*` owns artifact serialization, version checks, and storage mapping.
+  - Инфраструктурные библиотеки, разделяемые адаптерами/хендлерами.
+  - `app/lib/artifacts/*` отвечает за сериализацию артефактов, проверку версий и маппинг в storage.
 
 - `app/workers`
-  - Worker orchestration:
+  - Оркестрация воркеров:
     - polling runner
-    - claim/process/finalize loop
-    - role-to-handler mapping
-  - Stage-specific process handlers live in `app/workers/handlers`.
+    - цикл claim/process/finalize
+    - маппинг role-to-handler
+  - Логика конкретных стадий находится в `app/workers/handlers`.
 
 - `app/domain`
-  - Core contracts, DTOs, models, use-cases.
-  - Main place for production business logic.
-  - Artifact I/O is accessed via `ArtifactRepository` contract.
-  - Must not import transport/framework/SDK-specific modules.
+  - Базовые контракты, DTO, модели, use-case.
+  - Основное место для production бизнес-логики.
+  - Доступ к Artifact I/O через контракт `ArtifactRepository`.
+  - Не должен импортировать transport/framework/SDK-specific модули.
 
 - `app/repositories`
-  - Persistence adapters implementing domain repository contracts.
-  - Includes asyncpg Postgres adapter and in-memory deterministic stub.
+  - Persistence-адаптеры, реализующие доменные repository-контракты.
+  - Включает asyncpg Postgres-адаптер и in-memory детерминированный stub.
 
 - `app/clients`
-  - External integration adapters (storage, Telegram, LLM).
-  - Currently non-network stubs.
+  - Адаптеры внешних интеграций (storage, Telegram, LLM).
+  - В `INTEGRATION_MODE=stub` используются non-network stubs.
+  - В `INTEGRATION_MODE=real` для storage используется реальный S3-совместимый адаптер (`app/clients/s3.py`), при этом SDK-вызовы остаются изолированы в слое `clients`.
 
-## 3) Dependency Direction (Strict Rule)
+## 3) Направление зависимостей (строгое правило)
 
-Direction must remain:
+Направление должно оставаться таким:
 
 `api/services/workers -> domain contracts`
 
-And:
+Также:
 
-- `repositories` and `clients` implement domain contracts.
-- `domain` must not depend on `api`, `workers`, FastAPI, Uvicorn, provider SDKs, or DB drivers.
-- `workers/services` should use interfaces, not concrete infrastructure imports in business code.
-- Artifact contract compatibility policy defaults to `strict` (`ARTIFACT_COMPAT_POLICY=strict`).
+- `repositories` и `clients` реализуют domain-контракты.
+- `domain` не должен зависеть от `api`, `workers`, FastAPI, Uvicorn, provider SDK или DB drivers.
+- `workers/services` должны использовать интерфейсы, а не конкретные инфраструктурные импорты в бизнес-коде.
+- Политика совместимости artifact-контрактов по умолчанию `strict` (`ARTIFACT_COMPAT_POLICY=strict`).
 
-## 4) Request and Worker Flows
+## 4) Потоки API и воркеров
 
 ### API flow (role: `api`)
 
-- Routes are defined in `app/api/http_app.py`.
-- Routes call handler functions from `app/api/handlers/*`.
-- Handlers call domain use-cases (or stubs for now).
-- Responses are mapped back to HTTP JSON.
-- Export retrieval is API-mediated (`download_url` -> `/exports/{export_id}/download`) so storage can remain private.
+- Роуты определены в `app/api/http_app.py`.
+- Роуты вызывают хендлеры из `app/api/handlers/*`.
+- Хендлеры вызывают domain use-case (или stubs на текущем этапе).
+- Ответы маппятся обратно в HTTP JSON.
+- Выгрузки отдаются через API (`download_url` -> `/exports/{export_id}/download`), поэтому storage может оставаться приватным.
 
-Current key routes:
+Ключевые роуты:
 
 - `GET /health`
 - `GET /ready`
@@ -84,7 +90,6 @@ Current key routes:
 - `POST /assignments`
 - `GET /assignments`
 - `POST /submissions`
-- `POST /webhooks/telegram`
 - `GET /submissions/{submission_id}`
 - `POST /submissions/file` (synthetic infra check)
 - `GET /feedback`
@@ -94,55 +99,57 @@ Current key routes:
 
 ### Worker flow (worker-* roles)
 
-- `app/workers/runner.py` runs background polling loop.
-- Each tick calls `WorkerLoop.run_once()` from `app/workers/loop.py`.
-- `run_once()` lifecycle:
+- `app/workers/runner.py` запускает фоновый polling loop.
+- Каждый тик вызывает `WorkerLoop.run_once()` из `app/workers/loop.py`.
+- Для Telegram ingest в MVP используется polling-режим через `worker-ingest-telegram`.
+- Telegram ingest только на входе: `/start` создает подписанную web-ссылку и не создает submissions/raw artifacts.
+- Жизненный цикл `run_once()`:
   1. `claim_next(...)`
-  2. `process(claim)` (role handler)
-  3. optional `link_artifact(...)`
+  2. `process(claim)` (хендлер роли)
+  3. опционально `link_artifact(...)`
   4. `finalize(...)`
 
-Why each step exists:
+Зачем нужен каждый шаг:
 
 - `claim_next(...)`
-  - Select one eligible work item for the current stage.
-  - Prevent two workers from processing the same item at the same time.
+  - Выбирает один подходящий элемент работы для текущей стадии.
+  - Не дает двум воркерам одновременно обработать один и тот же элемент.
 
 - `process(claim)`
-  - Execute stage-specific business behavior (normalize/evaluate/deliver/etc).
-  - Returns `ProcessResult` with success flag, detail, and optional artifact metadata.
-  - Evaluate stage resolves chain spec from `app/eval/chains/chain.v1.yaml` and uses domain chain execution (`app/domain/evaluation_chain.py`).
+  - Выполняет stage-specific поведение (Telegram entry routing, normalize/evaluate/deliver и т.д.).
+  - Возвращает `ProcessResult` с флагом успеха, detail и optional artifact metadata.
+  - Стадия evaluate резолвит chain spec из `app/eval/chains/chain.v1.yaml` и использует domain chain execution (`app/domain/evaluation_chain.py`).
 
-- `link_artifact(...)` (optional)
-  - Persist artifact reference/version when stage produced output.
-  - Optional because some stages may only change state and not create artifacts.
-  - Artifact trace keys are documented in `app/domain/artifacts.py`.
-  - Keys map 1:1 to persisted artifact-producing stages.
+- `link_artifact(...)` (опционально)
+  - Сохраняет ссылку/версию артефакта, если стадия сгенерировала выход.
+  - Опционален, так как некоторые стадии меняют только состояние и не создают артефакты.
+  - Artifact trace keys задокументированы в `app/domain/artifacts.py`.
+  - Ключи 1:1 соответствуют стадиям, которые создают артефакты.
 
 - `finalize(...)`
-  - Record final outcome of the stage attempt (success/failure + detail).
-  - This is the terminal step for a single claim attempt and is used by retries/next-stage logic.
+  - Фиксирует итог попытки стадии (успех/ошибка + detail).
+  - Это терминальный шаг одной claim-попытки, на который опираются retries/next-stage logic.
 
-Lease behavior for long-running handlers:
+Lease-поведение для долгих обработчиков:
 
-- Runtime periodically calls `reclaim_expired_claims(stage=...)` before each worker tick.
-- `WorkerLoop` starts a heartbeat while `process(claim)` runs and extends claim lease via `heartbeat_claim(...)`.
-- If lease ownership is lost mid-process, the tick fails with stale-claim error and does not commit success.
+- Перед каждым тиком рантайм периодически вызывает `reclaim_expired_claims(stage=...)`.
+- Во время `process(claim)` `WorkerLoop` запускает heartbeat и продлевает lease через `heartbeat_claim(...)`.
+- Если lease-владение теряется в середине обработки, тик завершается ошибкой stale-claim и успех не фиксируется.
 
-Dead-letter handling (current limitation):
+Dead-letter (текущее ограничение):
 
-- `dead_letter` is currently a terminal persistence state only.
-- Runtime transitions work items to `dead_letter` after max-attempt failures or expired-lease reclaim.
-- There is currently no dedicated dead-letter processing flow (triage/requeue/alerting API or worker).
-- Production rollout should include operational dead-letter handling before relying on retries-only behavior.
+- `dead_letter` сейчас только терминальное persistence-состояние.
+- Рантайм переводит элементы в `dead_letter` после исчерпания попыток или reclaim просроченного lease.
+- Отдельного dead-letter flow пока нет (triage/requeue/alerting API или worker).
+- До production-rollout нужно добавить операционный dead-letter flow, а не полагаться только на retries.
 
-Execution order matters:
+Порядок выполнения важен:
 
-- Claim first, then process, then finalize.
-- If `process` fails, `finalize` still records failure context (via exception path in higher-level runner/retry policy).
-- Keep `process` deterministic and idempotent where possible; retries may re-run the same logical task.
+- Сначала claim, затем process, затем finalize.
+- Если `process` падает, `finalize` все равно фиксирует контекст ошибки (через exception path в runner/retry policy).
+- Старайтесь держать `process` детерминированным и идемпотентным; retries могут повторно запускать ту же логическую задачу.
 
-Sequence sketch:
+Схема последовательности:
 
 ```text
 runner tick
@@ -165,13 +172,13 @@ WorkerLoop.run_once()
 If claim_next returns None -> return did_work=False (idle/backoff path in runner).
 ```
 
-Role handler mapping is in `app/workers/handlers/factory.py`.
+Маппинг role handler находится в `app/workers/handlers/factory.py`.
 
-## 5) Skeleton Mode (Current State)
+## 5) Skeleton mode (текущее состояние)
 
-- Adapters are stubs, no real network calls.
-- Worker roles run continuous background polling loop.
-- `/ready` includes worker runtime state and counters:
+- Адаптеры stub-овые, реальных сетевых вызовов нет.
+- Worker-роли работают в непрерывном фоне (polling loop).
+- `/ready` включает состояние runtime-воркера и счетчики:
   - `worker_loop_enabled`
   - `worker_loop_ready`
   - `worker_metrics`:
@@ -180,80 +187,73 @@ Role handler mapping is in `app/workers/handlers/factory.py`.
     - `idle_ticks_total`
     - `errors_total`
 
-Runner tuning via env:
+Тюнинг runner через env:
 
-- `WORKER_POLL_INTERVAL_MS` (default `200`)
-- `WORKER_IDLE_BACKOFF_MS` (default `1000`)
-- `WORKER_ERROR_BACKOFF_MS` (default `2000`)
+- `WORKER_POLL_INTERVAL_MS` (по умолчанию `200`)
+- `WORKER_IDLE_BACKOFF_MS` (по умолчанию `1000`)
+- `WORKER_ERROR_BACKOFF_MS` (по умолчанию `2000`)
 
-## 6) Where to Implement New Logic
+Для ясности по режимам интеграции:
 
-Use `app/COMPONENTS.md` as source of truth for component IDs and file targets.
+- `INTEGRATION_MODE=stub`: skeleton-поведение, без реальных внешних вызовов.
+- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; для storage подключается S3-совместимый клиент через `app/services/bootstrap.py`.
 
-### If you add a new API business feature
+## 6) Где реализовывать новую логику
 
-1. Add/adjust route in `app/api/http_app.py`.
-2. Implement handler in `app/api/handlers/*`.
-3. Put real business rules into `app/domain/use_cases/*`.
-4. Inject dependencies through `app/services/bootstrap.py`.
-5. Add unit tests and integration tests.
+Используйте `app/COMPONENTS.md` как источник правды.
 
-### If you add a new worker stage behavior
+### Если добавляете новую API ручку
 
-1. Implement stage logic in `app/workers/handlers/<stage>.py`.
-2. Keep orchestration generic in `app/workers/loop.py`.
-3. Keep polling behavior in `app/workers/runner.py`.
-4. Add domain logic in `app/domain/use_cases/*`.
-5. Wire new dependencies through `app/services/bootstrap.py`.
+1. Добавьте/обновите роут в `app/api/http_app.py`.
+2. Реализуйте хендлер в `app/api/handlers/*`.
+3. Перенесите бизнес-правила в `app/domain/use_cases/*`.
+4. Подключите зависимости через `app/services/bootstrap.py`.
+5. Добавьте unit и integration тесты.
 
-### If you add real external integration
+### Если добавляете новый worker
 
-1. Define/extend contract in `app/domain/contracts.py`.
-2. Implement adapter in `app/clients/*` or `app/repositories/*`.
-3. Wire implementation in `app/services/bootstrap.py`.
-4. Do not call SDK/DB directly from domain use-cases.
+1. Реализуйте stage-логику в `app/workers/handlers/<stage>.py`.
+2. Держите оркестрацию общей в `app/workers/loop.py`.
+3. Держите polling-поведение в `app/workers/runner.py`.
+4. Добавьте доменную логику в `app/domain/use_cases/*`.
+5. Подключите новые зависимости через `app/services/bootstrap.py`.
 
-## 7) PR Readiness Checklist
+### Если добавляете реальную внешнюю интеграцию
 
-Use this checklist before opening a PR:
+1. Определите/расширьте контракт в `app/domain/contracts.py`.
+2. Реализуйте адаптер в `app/clients/*` или `app/repositories/*`.
+3. Подключите реализацию в `app/services/bootstrap.py`.
+4. Не вызывайте SDK/DB напрямую из domain use-case.
 
-- [ ] Business logic lives in `app/domain/use_cases/*`, not in route/transport code.
-- [ ] Dependency direction remains valid (`api/services/workers -> domain contracts`).
-- [ ] `COMPONENT_ID` values and mappings in `app/COMPONENTS.md` are updated if behavior changed.
-- [ ] Unit tests cover logic/contracts changes.
-- [ ] Integration tests cover runtime/wiring path changes.
-- [ ] If a new role was added, role/stage/handler/compose/test matrices are all updated.
-- [ ] `make test`, `make test-unit`, `make test-integration`, and `make typecheck` pass.
-- [ ] Cross-track edits outside primary ownership scope reference an explicit seam contract from `app/COMPONENTS.md` (`seam.*`).
+## 7) Чеклист готовности PR
 
-## 7.1) Parallel Ownership Boundaries
+Используйте этот список перед открытием PR:
 
-The contract-freeze workflow uses five primary ownership tracks to reduce PR conflicts:
+- [ ] Бизнес-логика находится в `app/domain/use_cases/*`, а не в route/transport коде.
+- [ ] Направление зависимостей валидно (`api/services/workers -> domain contracts`).
+- [ ] Обновлены `COMPONENT_ID` и маппинги в `app/COMPONENTS.md`, если поведение изменилось.
+- [ ] Unit-тесты покрывают изменения логики/контрактов.
+- [ ] Integration-тесты покрывают изменения runtime/wiring.
+- [ ] Если добавлена новая роль, обновлены role/stage/handler/compose/test matrices.
+- [ ] Проходят `make test`, `make test-unit`, `make test-integration`, `make typecheck`.
+- [ ] Кросс-трековые изменения вне основной зоны владения ссылаются на seam-контракт из `app/COMPONENTS.md` (`seam.*`).
 
-- Platform: runtime/bootstrap/repository claim semantics
-- Ingress: API upload and Telegram intake boundaries
-- Evaluation: normalized + llm-output contracts and deterministic scoring
-- Delivery/Export: feedback payloads and organizer export shaping
-- Quality: test matrix and acceptance checks
+## 8) Примечание о synthetic end-to-end
 
-When a change must touch another track's primary files, keep edits limited to documented seam files and call out the seam contract in the PR checklist.
+`POST /submissions/file` и `POST /internal/test/run-pipeline` предназначены только для инфраструктурной проверки.
 
-## 8) Synthetic End-to-End Note
+Они проверяют, что routing, handlers, wiring и последовательность стадий работают вместе в одном процессе, без реальных persistence/integration зависимостей.
 
-`POST /submissions/file` and `POST /internal/test/run-pipeline` are for infrastructure verification only.
+### 8.1) Быстрое использование
 
-They validate that routing, handlers, wiring, and stage sequencing work together in-process, without requiring real persistence/integrations.
+Рекомендуемая последовательность локальной проверки:
 
-### 8.1) Quick Usage
+1. Создайте candidate и assignment через API-роуты.
+2. Загрузите файл через `POST /submissions/file`.
+3. Запустите synthetic chain через `POST /internal/test/run-pipeline`.
+4. Проверьте финальное состояние/trace через `GET /submissions/{submission_id}`.
 
-Recommended local verification sequence:
-
-1. Create candidate and assignment via API routes.
-2. Upload a file with `POST /submissions/file`.
-3. Execute synthetic chain with `POST /internal/test/run-pipeline`.
-4. Inspect final state/trace with `GET /submissions/{submission_id}`.
-
-Minimal pipeline trigger example:
+Минимальный пример вызова pipeline:
 
 ```bash
 curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
@@ -261,22 +261,22 @@ curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
   -d '{"submission_id":"sub_01ABCDEF0123456789ABCDEF01"}'
 ```
 
-State semantics:
+Семантика состояний:
 
 - success path: `uploaded -> normalization_in_progress -> normalized -> evaluation_in_progress -> evaluated -> delivery_in_progress -> delivered`
-- fail-fast path: pipeline stops at first failed stage and returns `failed_*`
+- fail-fast path: пайплайн останавливается на первой неуспешной стадии и возвращает `failed_*`
 
-### 8.2 Deferred Post-MVP Hardening
+### 8.2 Сделать когда-то потом
 
-- Submission-level evaluation snapshot (`chain_digest` plus resolved chain spec) is deferred for post-MVP.
-- Current evaluate flow resolves the default chain spec at runtime from `app/eval/chains/chain.v1.yaml`.
-- Chain mismatch policy after snapshot rollout: start with `warn-only` diagnostics on digest mismatch, then promote to `strict-fail` once persistence is stable.
+- Submission-level evaluation snapshot (`chain_digest` и resolved chain spec) отложен на post-MVP.
+- Текущий evaluate flow резолвит default chain spec во время выполнения из `app/eval/chains/chain.v1.yaml`.
+- Политика chain mismatch после rollout snapshot: начать с `warn-only` диагностики при digest mismatch, затем перейти к `strict-fail`, когда persistence стабилизируется.
 
-## 9) Common Mistakes
+## 9) Частые ошибки
 
-### 9.1 Business logic in routes instead of domain use-cases
+### 9.1 Бизнес-логика в роуте вместо domain use-case
 
-Do:
+Правильно:
 
 ```python
 @app.post("/submissions")
@@ -289,7 +289,7 @@ async def create_submission(payload: CreateSubmissionRequest):
     )
 ```
 
-Don't:
+Неправильно:
 
 ```python
 @app.post("/submissions")
@@ -301,16 +301,16 @@ async def create_submission(payload: dict[str, str] = Body(default={})):
     return {"result": "fail"}
 ```
 
-### 9.2 Domain depending on concrete adapters
+### 9.2 Зависимость domain от конкретных адаптеров
 
-Do:
+Правильно:
 
 ```python
 def evaluate_submission(cmd: EvaluateSubmissionCommand, *, llm: LLMClient) -> EvaluateSubmissionResult:
     ...
 ```
 
-Don't:
+Неправильно:
 
 ```python
 from app.clients.stub import StubLLMClient
@@ -320,9 +320,9 @@ def evaluate_submission(cmd: EvaluateSubmissionCommand) -> EvaluateSubmissionRes
     ...
 ```
 
-### 9.3 Stage-specific behavior in generic worker loop
+### 9.3 Stage-specific поведение в общем worker loop
 
-Do:
+Правильно:
 
 ```python
 def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
@@ -330,7 +330,7 @@ def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
     ...
 ```
 
-Don't:
+Неправильно:
 
 ```python
 def run_once(self) -> bool:
@@ -340,9 +340,9 @@ def run_once(self) -> bool:
         ...
 ```
 
-### 9.4 Transport-specific types leaked into domain
+### 9.4 Transport-specific типы попали в domain
 
-Do:
+Правильно:
 
 ```python
 @dataclass(frozen=True)
@@ -350,7 +350,7 @@ class PrepareExportResult:
     export_rows: list[ExportRowArtifact]
 ```
 
-Don't:
+Неправильно:
 
 ```python
 from fastapi.responses import JSONResponse
@@ -358,69 +358,3 @@ from fastapi.responses import JSONResponse
 def prepare_export(...) -> JSONResponse:
     return JSONResponse({"ok": True})
 ```
-
-### 9.5 Missing component map and tests after changes
-
-Do:
-
-```text
-1. Update app/COMPONENTS.md with new/changed component IDs.
-2. Add/adjust unit + integration tests.
-```
-
-Don't:
-
-```text
-Ship new behavior without updating component map or tests.
-```
-
-## 10) Implementation Playbook
-
-Use this flow for new behavior:
-
-1. Scope the change
-   - Select a component from `app/COMPONENTS.md` (for example `worker.evaluate.process_claim`).
-   - Confirm target file and contracts before coding.
-2. Implement in the right layer
-   - Keep domain rules in `app/domain/use_cases/*`.
-   - Keep API transport in `app/api/*` and worker orchestration in `app/workers/loop.py` or `app/workers/runner.py`.
-3. Wire dependencies
-   - Add/adjust contracts first (`app/domain/contracts.py`) if needed.
-   - Wire adapters in `app/services/bootstrap.py`.
-4. Verify
-   - Add unit tests for business logic.
-   - Add integration tests for runtime path and wiring.
-   - Run `make test-unit`, `make test-integration`, and `make typecheck`.
-5. Finalize
-   - Update `app/COMPONENTS.md` when component boundaries or IDs change.
-   - Update `README.md` only if public runtime behavior changes.
-
-### Terminology: what "matrices" means here
-
-In this document, a matrix means a role registration map/list that must stay consistent across files.
-
-- `role matrix`: canonical role list in `app/roles.py` and user-facing role docs.
-- `stage matrix`: role -> stage mapping in `app/workers/roles.py`.
-- `handler matrix`: role -> handler mapping in `app/workers/handlers/factory.py`.
-- `compose matrix`: service -> role command mapping in `docker-compose.yml` and `docker-compose.override.yml`.
-- `test matrix`: role/service coverage lists in integration tests.
-
-### 10.1 When adding a new worker role
-
-Use this checklist to avoid partial registration:
-
-1. Define role and stage mapping
-   - Add role to `app/roles.py` (`SUPPORTED_ROLES`).
-   - Add stage mapping to `app/workers/roles.py` (`ROLE_TO_STAGE`).
-2. Implement and register handler
-   - Add handler module in `app/workers/handlers/<role_or_stage>.py`.
-   - Register the role in `app/workers/handlers/factory.py` (`build_process_handler`).
-3. Wire runtime services
-   - Add service entries in `docker-compose.yml` and `docker-compose.override.yml`.
-   - Keep role command shape consistent: `python -m app.main --role <role-name>`.
-4. Update test/service matrices
-   - Update `tests/integration/test_runtime_smoke.py` role list.
-   - Update `tests/integration/test_compose_contract.py` service matrix checks.
-5. Update component map and docs
-   - Add/adjust worker component IDs in `app/COMPONENTS.md`.
-   - Update `README.md` if user-facing runtime role list changes.

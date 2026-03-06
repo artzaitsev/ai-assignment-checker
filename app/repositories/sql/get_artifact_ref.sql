@@ -1,4 +1,5 @@
-SELECT a.object_key
+SELECT a.bucket,
+       a.object_key
 FROM artifacts a
 JOIN submissions s ON s.id = a.submission_id
 WHERE s.public_id = $1

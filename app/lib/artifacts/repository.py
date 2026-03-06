@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.domain.contracts import ArtifactRepository, StorageClient
+from app.lib.artifacts.refs import storage_key_from_ref
 from app.lib.artifacts.codecs import (
     decode_normalized,
     encode_export_rows,
@@ -34,7 +35,7 @@ class VersionedArtifactRepository(ArtifactRepository):
             raise ValueError(f"unsupported artifact compat policy: {self.compat_policy}")
 
     def load_normalized(self, *, artifact_ref: str) -> NormalizedArtifact:
-        payload = self.storage.get_bytes(key=_storage_key_from_ref(artifact_ref))
+        payload = self.storage.get_bytes(key=storage_key_from_ref(artifact_ref))
         artifact = decode_normalized(payload)
         self._validate_schema("normalized", artifact.schema_version)
         return artifact
@@ -66,9 +67,3 @@ class VersionedArtifactRepository(ArtifactRepository):
         raise ValueError(
             f"artifact schema mismatch for {artifact_kind}: expected {expected_schema_version}, got {actual_schema_version}"
         )
-
-
-def _storage_key_from_ref(ref: str) -> str:
-    if "://" in ref:
-        return ref.split("://", maxsplit=1)[1]
-    return ref
