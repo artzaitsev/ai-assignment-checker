@@ -7,11 +7,13 @@ import sys
 import uuid
 
 import uvicorn
+from dotenv import load_dotenv
 
 from app.api.http_app import build_app
 from app.logging_setup import configure_logging
 from app.roles import SUPPORTED_ROLES, validate_role
 from app.services.bootstrap import build_runtime_container
+from app.services.runtime_settings import validate_runtime_configuration_for_role
 
 
 def _default_port(role: str) -> int:
@@ -39,8 +41,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def create_runtime_app() -> object:
+    load_dotenv(override=False)
     role_name = os.getenv("APP_ROLE", "api")
     role = validate_role(role_name)
+    validate_runtime_configuration_for_role(role_name=role.name)
     run_id = str(uuid.uuid4())
     configure_logging()
     container = build_runtime_container(role)
@@ -55,6 +59,7 @@ def create_runtime_app() -> object:
 
 
 def run(argv: list[str] | None = None) -> int:
+    load_dotenv(override=False)
     args = parse_args(argv)
 
     try:
@@ -73,6 +78,12 @@ def run(argv: list[str] | None = None) -> int:
         "runtime initialized",
         extra={"role": role.name, "service": role.name, "run_id": run_id},
     )
+
+    try:
+        validate_runtime_configuration_for_role(role_name=role.name)
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 2
 
     if args.dry_run_startup:
         logger.info(

@@ -15,7 +15,12 @@
   - `worker-deliver`
 - `migrator` является внешним one-shot сервисом и не относится к app role.
 
-`app/main.py` валидирует роль, собирает зависимости через `app/services/bootstrap.py` и запускает FastAPI-приложение из `app/api/http_app.py`.
+`app/main.py` загружает `.env` (если файл присутствует), валидирует роль, выполняет fail-fast валидацию runtime-конфига и затем собирает зависимости через `app/services/bootstrap.py` перед запуском FastAPI-приложения из `app/api/http_app.py`.
+
+Валидация runtime-конфига управляется `RUNTIME_VALIDATION_MODE`:
+
+- `dev` (по умолчанию): локально-дружественный режим со stub-ориентированными дефолтами.
+- `strict`: fail-fast только по обязательным зависимостям активной роли (например, БД и required integration envs для конкретного worker/api role).
 
 ## 2) Слои и ответственность
 
@@ -347,5 +352,4 @@ from fastapi.responses import JSONResponse
 def prepare_export(...) -> JSONResponse:
     return JSONResponse({"ok": True})
 ```
-
 
