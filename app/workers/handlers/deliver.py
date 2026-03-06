@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import BuildFeedbackCommand
-from app.domain.models import SortOrder, SubmissionFieldGroup, SubmissionListQuery
-from app.domain.models import ProcessResult, WorkItemClaim
+from app.domain.error_taxonomy import classify_error, resolve_stage_error
+from app.domain.models import (
+    CandidateSourceType,
+    ProcessResult,
+    SortOrder,
+    SubmissionFieldGroup,
+    SubmissionListQuery,
+    WorkItemClaim,
+)
 from app.domain.use_cases.deliver import build_feedback
 from app.workers.handlers.deps import WorkerDeps
 
@@ -19,6 +25,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
                 include=frozenset(
                     {
                         SubmissionFieldGroup.CORE,
+                        SubmissionFieldGroup.CANDIDATE,
                         SubmissionFieldGroup.EVALUATION,
                     }
                 ),
@@ -43,9 +50,24 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             )
         )
 
+        if item.candidate is None:
+            raise KeyError(f"candidate is required for delivery: {claim.item_id}")
+
+        chat_id = await deps.repository.find_candidate_source_external_id(
+            candidate_public_id=item.candidate.public_id,
+            source_type=CandidateSourceType.TELEGRAM_CHAT,
+        )
+        if chat_id is None:
+            return ProcessResult(
+                success=False,
+                detail=f"telegram_chat mapping is missing for submission: {claim.item_id}",
+                error_code=resolve_stage_error(stage="exports", code="validation_error"),
+                retry_classification=classify_error(resolve_stage_error(stage="exports", code="validation_error")),
+            )
+
         try:
-            external_message_id = deps.telegram.send_result_notification(
-                submission_id=claim.item_id,
+            external_message_id = deps.telegram.send_text(
+                chat_id=chat_id,
                 message=feedback.message_text,
             )
         except Exception as exc:  # pragma: no cover - concrete client behavior

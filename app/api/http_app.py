@@ -6,8 +6,16 @@ from collections.abc import Awaitable, Callable
 import logging
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
 
 from app.api.handlers.assignments import create_assignment_handler, list_assignments_handler
+from app.api.handlers.candidate_apply import (
+    exchange_entry_token_for_session,
+    submit_candidate_apply_form,
+    validate_apply_session,
+)
 from app.api.handlers.candidates import create_candidate_handler
 from app.api.handlers.deps import ApiDeps
 from app.api.handlers.exports import export_results_handler
@@ -15,6 +23,7 @@ from app.api.handlers.feedback import list_feedback_handler
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.api.handlers.status import get_submission_status_handler, get_submission_status_with_trace_handler
 from app.api.handlers.submissions import create_submission_with_candidate_handler, create_submission_with_file_handler
+from app.api.views.candidate_apply import form_context, page_context, result_context
 from app.api.schemas import (
     ASSIGNMENT_ID_PATTERN,
     CANDIDATE_ID_PATTERN,
@@ -106,6 +115,7 @@ def build_app(
         )
 
     app = FastAPI(title="ai-assignment-checker", version="0.1.0", lifespan=lifespan)
+    templates = Jinja2Templates(directory="app/templates")
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health() -> HealthResponse:
@@ -185,6 +195,112 @@ def build_app(
             if traced_status is not None:
                 return traced_status
         return await get_submission_status_handler(submission_id=submission_id)
+
+    @app.get("/candidate/apply", response_class=HTMLResponse, tags=["Candidates"])
+    async def candidate_apply_page(request: Request, token: str = Query(..., min_length=8)) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        try:
+            apply_session = await exchange_entry_token_for_session(api_deps, entry_token=token)
+        except ValueError as exc:
+            response = templates.TemplateResponse(
+                request=request,
+                name="candidate_apply/page.html",
+                context=page_context(error_message=str(exc)),
+                status_code=400,
+            )
+            response.delete_cookie("apply_session")
+            return response
+
+        response = templates.TemplateResponse(
+            request=request,
+            name="candidate_apply/page.html",
+            context=page_context(),
+        )
+        response.set_cookie(
+            key="apply_session",
+            value=apply_session,
+            max_age=api_deps.apply_session_settings.ttl_seconds if api_deps.apply_session_settings else 900,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
+        return response
+
+    @app.get("/candidate/apply/form", response_class=HTMLResponse, tags=["Candidates"])
+    async def candidate_apply_form(request: Request) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        session_token = request.cookies.get("apply_session")
+        try:
+            session = validate_apply_session(api_deps, session_token=session_token)
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="candidate_apply/result.html",
+                context=result_context(
+                    success=False,
+                    title="Сессия истекла",
+                    message=str(exc),
+                ),
+                status_code=401,
+            )
+
+        assignments = await api_deps.repository.list_assignments(active_only=True)
+        return templates.TemplateResponse(
+            request=request,
+            name="candidate_apply/form.html",
+            context=form_context(assignments=assignments, assignment_hint=session.assignment_hint),
+        )
+
+    @app.post("/candidate/apply/submit", response_class=HTMLResponse, tags=["Candidates"])
+    async def candidate_apply_submit(
+        request: Request,
+        first_name: str = Form(..., min_length=1, max_length=128),
+        last_name: str = Form(..., min_length=1, max_length=128),
+        assignment_public_id: str = Form(..., pattern=ASSIGNMENT_ID_PATTERN),
+        file: UploadFile = File(...),
+    ) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        session_token = request.cookies.get("apply_session")
+        try:
+            session = validate_apply_session(api_deps, session_token=session_token)
+            payload = await file.read()
+            filename = file.filename or "submission.bin"
+            submission_id = await submit_candidate_apply_form(
+                api_deps,
+                session=session,
+                first_name=first_name,
+                last_name=last_name,
+                assignment_public_id=assignment_public_id,
+                filename=filename,
+                payload=payload,
+            )
+        except (DomainInvariantError, ValueError) as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="candidate_apply/result.html",
+                context=result_context(success=False, title="Не удалось отправить работу", message=str(exc)),
+                status_code=400,
+            )
+
+        response = templates.TemplateResponse(
+            request=request,
+            name="candidate_apply/result.html",
+            context=result_context(
+                success=True,
+                title="Работа принята",
+                message="Мы получили Ваш файл и поставили его в очередь на проверку.",
+                submission_id=submission_id,
+            ),
+        )
+        response.delete_cookie("apply_session")
+        return response
 
     @app.post(
         "/submissions/file",

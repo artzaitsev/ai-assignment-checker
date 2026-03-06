@@ -43,8 +43,10 @@ async def create_submission_with_file_handler(
     payload: bytes,
     candidate_public_id: str,
     assignment_public_id: str,
+    source_external_id: str | None = None,
 ) -> UploadSubmissionFileResponse:
-    source_external_id = f"file-{len(deps.submissions) + 1}"
+    if source_external_id is None:
+        source_external_id = f"file-{len(deps.submissions) + 1}"
     persisted = await deps.repository.create_submission_with_source(
         candidate_public_id=candidate_public_id,
         assignment_public_id=assignment_public_id,

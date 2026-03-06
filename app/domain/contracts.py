@@ -6,8 +6,10 @@ from app.domain.dto import LLMClientRequest, LLMClientResult
 from app.lib.artifacts.types import ExportRowArtifact, NormalizedArtifact
 from app.domain.models import (
     AssignmentSnapshot,
+    CandidateSourceType,
     CandidateSnapshot,
     SubmissionSnapshot,
+    TelegramInboundEvent,
     SubmissionSourceSnapshot,
     SubmissionListItem,
     SubmissionListQuery,
@@ -47,6 +49,17 @@ class WorkRepository(Protocol):
         last_name: str,
         metadata_json: dict[str, object] | None = None,
     ) -> CandidateSnapshot: ...
+
+    async def find_candidate_source_external_id(
+        self,
+        *,
+        candidate_public_id: str,
+        source_type: CandidateSourceType,
+    ) -> str | None: ...
+
+    async def get_stream_cursor(self, *, stream: str) -> str | None: ...
+
+    async def set_stream_cursor(self, *, stream: str, cursor: str) -> None: ...
 
     async def create_assignment(
         self,
@@ -189,11 +202,9 @@ class ArtifactRepository(Protocol):
 
 @runtime_checkable
 class TelegramClient(Protocol):
-    def poll_updates(self, *, timeout: int = 30) -> list[dict[str, str]]: ...
+    def poll_events(self, *, timeout: int = 30, offset: str | None = None) -> list[TelegramInboundEvent]: ...
 
-    def get_file_bytes(self, *, file_id: str) -> bytes: ...
-
-    def send_result_notification(self, *, submission_id: str, message: str) -> str | None: ...
+    def send_text(self, *, chat_id: str, message: str) -> str | None: ...
 
 
 @runtime_checkable

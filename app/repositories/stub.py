@@ -9,6 +9,7 @@ from app.domain.ids import new_assignment_public_id, new_candidate_public_id, ne
 from app.domain.lifecycle import ALLOWED_TRANSITIONS, STAGE_LIFECYCLES
 from app.domain.models import (
     AssignmentSnapshot,
+    CandidateSourceType,
     CandidateSnapshot,
     SortOrder,
     SubmissionFieldGroup,
@@ -70,6 +71,7 @@ class InMemoryWorkRepository:
     candidates: dict[str, _CandidateRow] = field(default_factory=dict)
     candidate_sources: dict[tuple[str, str], str] = field(default_factory=dict)
     assignments: dict[str, _AssignmentRow] = field(default_factory=dict)
+    stream_cursors: dict[str, str] = field(default_factory=dict)
     llm_runs: list[dict[str, object]] = field(default_factory=list)
     evaluations: list[dict[str, object]] = field(default_factory=list)
     deliveries: list[dict[str, object]] = field(default_factory=list)
@@ -112,6 +114,23 @@ class InMemoryWorkRepository:
         created = await self.create_candidate(first_name=first_name, last_name=last_name)
         self.candidate_sources[key] = created.candidate_public_id
         return created
+
+    async def find_candidate_source_external_id(
+        self,
+        *,
+        candidate_public_id: str,
+        source_type: CandidateSourceType,
+    ) -> str | None:
+        for (stored_source_type, source_external_id), stored_candidate_public_id in self.candidate_sources.items():
+            if stored_source_type == source_type and stored_candidate_public_id == candidate_public_id:
+                return source_external_id
+        return None
+
+    async def get_stream_cursor(self, *, stream: str) -> str | None:
+        return self.stream_cursors.get(stream)
+
+    async def set_stream_cursor(self, *, stream: str, cursor: str) -> None:
+        self.stream_cursors[stream] = cursor
 
     async def create_assignment(
         self,

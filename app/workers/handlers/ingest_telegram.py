@@ -1,124 +1,68 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
 
 from app.domain.models import ProcessResult, WorkItemClaim
+from app.domain.use_cases.telegram_entry_links import build_candidate_apply_link, sign_entry_token
 from app.workers.handlers.deps import WorkerDeps
 
 COMPONENT_ID = "worker.ingest_telegram.process_claim"
+TELEGRAM_UPDATES_STREAM = "telegram_updates"
+UNSUPPORTED_EVENT_HELP = (
+    "Я помогу Вам начать подачу заявки. Отправьте /start, чтобы получить защищенную ссылку на форму."
+)
 
 logger = logging.getLogger("runtime")
 
 
 async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
-    """Poll Telegram and ingest new updates.
-
-    This role is transport-facing. It does not rely on the DB claim loop to run;
-    instead it polls Telegram and creates `uploaded` submissions directly.
-    """
+    """Poll Telegram and respond with entrypoint links/help."""
     del claim
     try:
-        # Poll Telegram with timeout (long-polling behavior)
-        updates = deps.telegram.poll_updates(timeout=30)
+        last_update_id = await deps.repository.get_stream_cursor(stream=TELEGRAM_UPDATES_STREAM)
+        events = deps.telegram.poll_events(timeout=30, offset=last_update_id)
 
-        if not updates:
-            # No new updates, idle tick
+        if not events:
             return ProcessResult(
                 success=True,
-                detail="no new telegram updates",
+                detail="no new telegram events",
                 artifact_ref=None,
                 artifact_version=None,
             )
 
-        created_count = 0
+        responded_count = 0
         skipped_count = 0
-        for update in updates:
-            update_id = update.get("update_id")
-            assignment_public_id = update.get("assignment_public_id")
-            file_id = update.get("file_id")
-            file_name = update.get("file_name", "submission.bin")
-            candidate_public_id = update.get("candidate_public_id")
-            telegram_user_id = update.get("telegram_user_id")
-            first_name = update.get("first_name")
-            last_name = update.get("last_name")
+        for event in events:
+            if deps.telegram_link_settings is None:
+                raise RuntimeError("telegram link settings are not configured")
 
-            if not (
-                isinstance(update_id, str)
-                and isinstance(assignment_public_id, str)
-                and isinstance(file_id, str)
-            ):
-                logger.warning(
-                    "telegram update missing required fields",
-                    extra={"update": update},
+            command = _resolve_command(event)
+            assignment_hint = _assignment_hint_from_event(event)
+
+            if command == "/start":
+                token = sign_entry_token(
+                    chat_id=event.chat_id,
+                    assignment_hint=assignment_hint,
+                    settings=deps.telegram_link_settings,
                 )
-                skipped_count += 1
-                continue
-
-            if not isinstance(file_name, str) or not file_name:
-                file_name = "submission.bin"
-
-            update_id = cast(str, update_id)
-            assignment_public_id = cast(str, assignment_public_id)
-            file_id = cast(str, file_id)
-
-            resolved_candidate_public_id = await _resolve_candidate_public_id(
-                deps,
-                update=update,
-                candidate_public_id=candidate_public_id,
-                telegram_user_id=telegram_user_id,
-                first_name=first_name,
-                last_name=last_name,
-            )
-            if resolved_candidate_public_id is None:
-                logger.warning(
-                    "telegram update missing candidate identity",
-                    extra={"update": update},
+                signed_link = build_candidate_apply_link(settings=deps.telegram_link_settings, token=token)
+                deps.telegram.send_text(
+                    chat_id=event.chat_id,
+                    message=f"Начните здесь: {signed_link}",
                 )
-                skipped_count += 1
-                continue
+            else:
+                deps.telegram.send_text(chat_id=event.chat_id, message=UNSUPPORTED_EVENT_HELP)
 
-            # Idempotency is enforced by repository uniqueness on (source_type, source_external_id).
-            persisted = await deps.repository.create_submission_with_source(
-                candidate_public_id=resolved_candidate_public_id,
-                assignment_public_id=assignment_public_id,
-                source_type="telegram",
-                source_external_id=update_id,
-                initial_status="uploaded",
-                metadata_json={
-                    "update_id": update_id,
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "entrypoint": "telegram_poll",
-                },
-            )
-            if not persisted.created:
-                continue
-
-            payload = deps.telegram.get_file_bytes(file_id=file_id)
-            raw_ref = deps.storage.put_bytes(
-                key=f"raw/{persisted.submission_id}/{file_name}",
-                payload=payload,
-            )
-            await deps.repository.link_artifact(
-                item_id=persisted.submission_id,
-                stage="raw",
-                artifact_ref=raw_ref,
-                artifact_version=None,
-            )
-
-            created_count += 1
+            await deps.repository.set_stream_cursor(stream=TELEGRAM_UPDATES_STREAM, cursor=event.update_id)
+            responded_count += 1
             logger.info(
-                "created submission from telegram poll",
-                extra={
-                    "submission_id": persisted.submission_id,
-                    "update_id": update_id,
-                },
+                "telegram event handled",
+                extra={"update_id": event.update_id, "command": command or "<none>"},
             )
 
         return ProcessResult(
             success=True,
-            detail=f"processed {created_count} telegram updates (skipped {skipped_count})",
+            detail=f"processed {responded_count} telegram events (skipped {skipped_count})",
             artifact_ref=None,
             artifact_version=None,
         )
@@ -132,28 +76,28 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         )
 
 
-async def _resolve_candidate_public_id(
-    deps: WorkerDeps,
-    *,
-    update: dict[str, str],
-    candidate_public_id: object,
-    telegram_user_id: object,
-    first_name: object,
-    last_name: object,
-) -> str | None:
-    if isinstance(candidate_public_id, str):
-        return candidate_public_id
-
-    if not isinstance(telegram_user_id, str) or not telegram_user_id:
+def _resolve_command(event: object) -> str | None:
+    command = getattr(event, "command", None)
+    if isinstance(command, str) and command:
+        return command
+    text = getattr(event, "text", None)
+    if not isinstance(text, str):
         return None
+    normalized = text.strip()
+    if not normalized.startswith("/"):
+        return None
+    return normalized.split(maxsplit=1)[0]
 
-    resolved_first_name = first_name if isinstance(first_name, str) and first_name else "Telegram"
-    resolved_last_name = last_name if isinstance(last_name, str) and last_name else "Candidate"
-    snapshot = await deps.repository.get_or_create_candidate_by_source(
-        source_type="telegram",
-        source_external_id=telegram_user_id,
-        first_name=resolved_first_name,
-        last_name=resolved_last_name,
-        metadata_json={"telegram_user_id": telegram_user_id, "raw_update": dict(update)},
-    )
-    return snapshot.candidate_public_id
+
+def _assignment_hint_from_event(event: object) -> str | None:
+    text = getattr(event, "text", None)
+    if not isinstance(text, str):
+        return None
+    normalized = text.strip()
+    if not normalized.startswith("/start"):
+        return None
+    parts = normalized.split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    hint = parts[1].strip()
+    return hint or None

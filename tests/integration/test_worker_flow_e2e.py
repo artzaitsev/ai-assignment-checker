@@ -28,7 +28,12 @@ def test_worker_loops_cover_full_backend_flow() -> None:
             llm=llm,
         )
 
-        candidate = await repository.create_candidate(first_name="Flow", last_name="Candidate")
+        candidate = await repository.get_or_create_candidate_by_source(
+            source_type="telegram_chat",
+            source_external_id="chat-flow-e2e",
+            first_name="Flow",
+            last_name="Candidate",
+        )
         assignment = await repository.create_assignment(title="Flow Assignment", description="Flow Description")
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
@@ -74,7 +79,8 @@ def test_worker_loops_cover_full_backend_flow() -> None:
         snapshot = await repository.get_submission(submission_id=created.submission_id)
         assert snapshot is not None
         assert snapshot.status == "delivered"
-        assert telegram.notifications[created.submission_id]
+        assert telegram.sent_texts
+        assert telegram.sent_texts[0][0] == "chat-flow-e2e"
         assert repository.llm_runs
         assert repository.evaluations
 

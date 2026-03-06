@@ -1,0 +1,66 @@
+<form
+  class="space-y-4"
+  hx-post="/candidate/apply/submit"
+  hx-target="#candidate-apply-content"
+  hx-swap="innerHTML"
+  hx-encoding="multipart/form-data"
+>
+  <div class="grid gap-4 sm:grid-cols-2">
+    <div>
+      <label for="first_name" class="mb-1 block text-sm font-medium text-slate-700">Имя</label>
+      <input
+        id="first_name"
+        name="first_name"
+        type="text"
+        required
+        class="block w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm focus:border-sky-500 focus:ring-sky-500"
+        placeholder="Иван"
+      />
+    </div>
+    <div>
+      <label for="last_name" class="mb-1 block text-sm font-medium text-slate-700">Фамилия</label>
+      <input
+        id="last_name"
+        name="last_name"
+        type="text"
+        required
+        class="block w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm focus:border-sky-500 focus:ring-sky-500"
+        placeholder="Иванов"
+      />
+    </div>
+  </div>
+
+  <div>
+    <label for="assignment_public_id" class="mb-1 block text-sm font-medium text-slate-700">Задание</label>
+    <select
+      id="assignment_public_id"
+      name="assignment_public_id"
+      required
+      class="block w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm focus:border-sky-500 focus:ring-sky-500"
+    >
+      {% for assignment in assignments %}
+      <option value="{{ assignment.assignment_public_id }}" {% if assignment_hint and assignment_hint == assignment.assignment_public_id %}selected{% endif %}>
+        {{ assignment.title }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <label for="file" class="mb-1 block text-sm font-medium text-slate-700">Файл с решением</label>
+    <input
+      id="file"
+      name="file"
+      type="file"
+      required
+      class="block w-full cursor-pointer rounded-lg border border-slate-300 bg-slate-50 text-sm text-slate-700 focus:outline-none"
+    />
+  </div>
+
+  <button
+    type="submit"
+    class="inline-flex items-center rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-sky-700 focus:outline-none focus:ring-4 focus:ring-sky-300"
+  >
+    Отправить работу
+  </button>
+</form>

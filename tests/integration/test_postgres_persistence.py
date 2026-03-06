@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from app.domain.errors import DomainInvariantError
+from app.domain.models import CandidateSourceType
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from tests.integration.postgres_test_utils import apply_down, apply_up, require_postgres, reset_public_schema
 
@@ -142,22 +143,19 @@ def test_source_tracking_and_idempotency_for_api_and_telegram() -> None:
             assert api_second.created is False
             assert api_first.submission_id == api_second.submission_id
 
-            tg = await repo.create_submission_with_source(
+            resolved = await repo.get_or_create_candidate_by_source(
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+                source_external_id="chat-11",
+                first_name="Should",
+                last_name="NotCreate",
+                metadata_json={"chat_id": "chat-11"},
+            )
+            assert resolved.candidate_public_id == candidate
+            chat_external_id = await repo.find_candidate_source_external_id(
                 candidate_public_id=candidate,
-                assignment_public_id=assignment,
-                source_type="telegram",
-                source_external_id="update-11",
-                initial_status="telegram_update_received",
-                metadata_json={"update_id": "11", "file_id": "f-11"},
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
             )
-            source = await repo.find_submission_source(
-                source_type="telegram",
-                source_external_id="update-11",
-            )
-            assert tg.created is True
-            assert source is not None
-            assert source.submission_id == tg.submission_id
-            assert source.metadata_json["file_id"] == "f-11"
+            assert chat_external_id == "chat-11"
         finally:
             await manager.shutdown()
 

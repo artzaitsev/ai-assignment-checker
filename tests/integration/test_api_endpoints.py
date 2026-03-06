@@ -3,13 +3,14 @@ import asyncio
 from fastapi.testclient import TestClient
 import pytest
 
-from app.clients.stub import StubTelegramClient
 from app.api.http_app import build_app
-from app.roles import validate_role
-from app.services.bootstrap import build_runtime_container
-from app.domain.models import WorkItemClaim
+from app.clients.stub import StubTelegramClient
+from app.domain.models import CandidateSourceType, TelegramInboundEvent, TelegramLinkSettings, WorkItemClaim
+from app.domain.use_cases.telegram_entry_links import sign_entry_token
 from app.workers.handlers import ingest_telegram
 from app.workers.handlers.deps import WorkerDeps
+from app.roles import validate_role
+from app.services.bootstrap import build_runtime_container
 from tests.integration.api_seed import seed_candidate_and_assignment
 
 
@@ -144,7 +145,7 @@ def test_skeleton_api_endpoints_are_available() -> None:
 
 
 @pytest.mark.integration
-def test_telegram_polling_ingest_path_is_idempotent_and_links_raw() -> None:
+def test_telegram_polling_start_path_is_idempotent_without_submission_side_effects() -> None:
     role = validate_role("api")
     container = build_runtime_container(role)
     app = build_app(
@@ -155,19 +156,19 @@ def test_telegram_polling_ingest_path_is_idempotent_and_links_raw() -> None:
     )
 
     with TestClient(app) as client:
-        candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        _candidate_public_id, _assignment_public_id = seed_candidate_and_assignment(client=client)
 
         assert isinstance(container.telegram, StubTelegramClient)
-        container.telegram.updates.append(
-            {
-                "update_id": "upd-42",
-                "candidate_public_id": candidate_public_id,
-                "assignment_public_id": assignment_public_id,
-                "file_id": "tg-file-42",
-                "file_name": "task.py",
-            }
+        container.telegram.events.append(
+            TelegramInboundEvent(
+                update_id="upd-42",
+                chat_id="chat-42",
+                telegram_user_id="tg-user-42",
+                kind="message",
+                command="/start",
+                text="/start asg-42",
+            )
         )
-        container.telegram.files["tg-file-42"] = b"print('telegram')"
 
         deps = WorkerDeps(
             repository=container.repository,
@@ -175,6 +176,11 @@ def test_telegram_polling_ingest_path_is_idempotent_and_links_raw() -> None:
             storage=container.storage,
             telegram=container.telegram,
             llm=container.llm,
+            telegram_link_settings=TelegramLinkSettings(
+                public_web_base_url="https://portal.example.com",
+                signing_secret="test-secret-012345",
+                ttl_seconds=600,
+            ),
         )
         first = asyncio.run(
             ingest_telegram.process_claim(
@@ -189,19 +195,88 @@ def test_telegram_polling_ingest_path_is_idempotent_and_links_raw() -> None:
             )
         )
         assert first.success is True
-        assert "processed 1 telegram updates" in first.detail
+        assert "processed 1 telegram events" in first.detail
         assert second.success is True
-        assert "processed 0 telegram updates" in second.detail
+        assert "no new telegram events" in second.detail
+        assert container.telegram.sent_texts
+        assert container.telegram.sent_texts[0][0] == "chat-42"
+        assert "/candidate/apply?token=" in container.telegram.sent_texts[0][1]
 
-        source = asyncio.run(
-            container.repository.find_submission_source(
-                source_type="telegram",
-                source_external_id="upd-42",
+
+@pytest.mark.integration
+def test_candidate_apply_html_flow_creates_submission_and_chat_mapping() -> None:
+    role = validate_role("api")
+    container = build_runtime_container(role)
+    app = build_app(
+        role=role.name,
+        run_id="integration-api-candidate-apply",
+        worker_loop=container.worker_loop,
+        api_deps=container.api_deps,
+    )
+
+    with TestClient(app) as client:
+        _candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        assert container.api_deps.telegram_link_settings is not None
+        token = sign_entry_token(
+            chat_id="chat-apply-1",
+            assignment_hint=assignment_public_id,
+            settings=container.api_deps.telegram_link_settings,
+        )
+
+        page_response = client.get("/candidate/apply", params={"token": token})
+        assert page_response.status_code == 200
+        assert "Завершите отправку Вашей работы" in page_response.text
+        assert "apply_session=" in page_response.headers.get("set-cookie", "")
+
+        form_response = client.get("/candidate/apply/form")
+        assert form_response.status_code == 200
+        assert "Отправить работу" in form_response.text
+
+        submit_response = client.post(
+            "/candidate/apply/submit",
+            data={
+                "first_name": "Web",
+                "last_name": "Candidate",
+                "assignment_public_id": assignment_public_id,
+            },
+            files={
+                "file": ("task.py", b"print('hello')", "text/x-python"),
+            },
+        )
+        assert submit_response.status_code == 200
+        assert "Работа принята" in submit_response.text
+        assert "apply_session=" in submit_response.headers.get("set-cookie", "")
+        assert container.api_deps.submissions
+
+        resolved = asyncio.run(
+            container.repository.get_or_create_candidate_by_source(
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+                source_external_id="chat-apply-1",
+                first_name="Other",
+                last_name="Name",
             )
         )
-        assert source is not None
-        snapshot = asyncio.run(container.repository.get_submission(submission_id=source.submission_id))
-        assert snapshot is not None
-        assert snapshot.status == "uploaded"
-        raw_ref = asyncio.run(container.repository.get_artifact_ref(item_id=source.submission_id, stage="raw"))
-        assert raw_ref.startswith("s3://raw/")
+        chat_external_id = asyncio.run(
+            container.repository.find_candidate_source_external_id(
+                candidate_public_id=resolved.candidate_public_id,
+                source_type=CandidateSourceType.TELEGRAM_CHAT,
+            )
+        )
+        assert chat_external_id == "chat-apply-1"
+
+
+@pytest.mark.integration
+def test_candidate_apply_rejects_invalid_token() -> None:
+    role = validate_role("api")
+    container = build_runtime_container(role)
+    app = build_app(
+        role=role.name,
+        run_id="integration-api-candidate-apply-invalid",
+        worker_loop=container.worker_loop,
+        api_deps=container.api_deps,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/candidate/apply", params={"token": "invalid.token"})
+        assert response.status_code == 400
+        assert "Ссылка недействительна" in response.text
