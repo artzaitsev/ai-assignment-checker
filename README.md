@@ -104,11 +104,29 @@ Swagger/OpenAPI доступен по стандартным endpoint FastAPI (`
 
 Используйте `.env.example` в корне репозитория как канонический шаблон переменных.
 
+Рантайм автоматически загружает `.env` при старте, если файл существует.
+Приоритет значений: сначала `.env`, затем переменные процесса (process env) как override.
+
 Шаблон делит переменные на три группы:
 
 - уже используются рантаймом/тестами;
 - уже присутствуют в postgres-сервисе docker-compose;
 - потребуются после замены stub-ов на реальные интеграции (S3, Telegram, LLM).
+
+### Режим валидации runtime-конфига
+
+- `RUNTIME_VALIDATION_MODE=dev` (по умолчанию): локально-дружественный режим со stub-ориентированными дефолтами.
+- `RUNTIME_VALIDATION_MODE=strict`: fail-fast проверка только критичных зависимостей рантайма для активной роли.
+
+`strict` проверяет:
+
+- `api`: `DATABASE_URL`
+- `worker-ingest-telegram`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+- `worker-normalize`: `DATABASE_URL`, `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+- `worker-evaluate`: `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`
+- `worker-deliver`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+
+Опциональные/инфраструктурные переменные с валидными дефолтами не должны сами по себе валить старт.
 
 Скопировать пример локально:
 

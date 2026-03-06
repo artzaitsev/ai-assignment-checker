@@ -14,6 +14,7 @@ def test_cli_returns_non_zero_for_invalid_role(capsys: pytest.CaptureFixture[str
 
 
 @pytest.mark.unit
-def test_cli_dry_run_succeeds_for_valid_role() -> None:
+def test_cli_dry_run_succeeds_for_valid_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "dev")
     exit_code = run(["--role", "api", "--dry-run-startup"])
     assert exit_code == 0
