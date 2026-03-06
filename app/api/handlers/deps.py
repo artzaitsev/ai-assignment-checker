@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.domain.contracts import ArtifactRepository, LLMClient, StorageClient, TelegramClient, WorkRepository
+from app.domain.models import ApplySessionSettings, TelegramLinkSettings
 
 
 @dataclass
@@ -23,3 +24,5 @@ class ApiDeps:
     telegram: TelegramClient
     llm: LLMClient
     submissions: dict[str, SubmissionRecord]
+    telegram_link_settings: TelegramLinkSettings | None = None
+    apply_session_settings: ApplySessionSettings | None = None

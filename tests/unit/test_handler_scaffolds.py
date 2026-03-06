@@ -8,7 +8,14 @@ from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.lib.artifacts import build_artifact_repository
 from app.lib.artifacts.types import NormalizedArtifact
-from app.domain.models import SortOrder, SubmissionSortBy, SubmissionStatus, WorkItemClaim
+from app.domain.models import (
+    SortOrder,
+    SubmissionSortBy,
+    SubmissionStatus,
+    TelegramInboundEvent,
+    TelegramLinkSettings,
+    WorkItemClaim,
+)
 from app.repositories.stub import InMemoryWorkRepository
 from app.workers.handlers import deliver, evaluate, ingest_telegram, normalize
 from app.workers.handlers.deps import WorkerDeps
@@ -46,28 +53,33 @@ def test_ingest_telegram_handler_polls_updates() -> None:
         storage=storage,
         telegram=telegram,
         llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
     )
 
     async def _run() -> None:
-        # Prepare candidate and assignment
-        candidate = await repository.create_candidate(first_name="Test", last_name="User")
-        assignment = await repository.create_assignment(title="Test Assignment", description="Test Desc")
-
-        # Add a mock telegram update
-        telegram.updates.append({
-            "update_id": "upd_001",
-            "candidate_public_id": candidate.candidate_public_id,
-            "assignment_public_id": assignment.assignment_public_id,
-            "file_id": "file_123",
-            "file_name": "solution.py",
-        })
-        telegram.files["file_123"] = b"print('hello')"
+        telegram.events.append(
+            TelegramInboundEvent(
+                update_id="upd_001",
+                chat_id="chat_1",
+                telegram_user_id="tg_user_1",
+                kind="message",
+                command="/start",
+                text="/start asg_1",
+            )
+        )
 
         claim = WorkItemClaim(item_id="poll-tick-1", stage="raw", attempt=1)
         result = await ingest_telegram.process_claim(deps, claim=claim)
 
         assert result.success is True
-        assert "processed 1 telegram updates" in result.detail
+        assert "processed 1 telegram events" in result.detail
+        assert telegram.sent_texts
+        assert telegram.sent_texts[0][0] == "chat_1"
+        assert "/candidate/apply?token=" in telegram.sent_texts[0][1]
 
     asyncio.run(_run())
 
@@ -85,6 +97,11 @@ def test_ingest_telegram_handler_idle_when_no_updates() -> None:
         storage=storage,
         telegram=telegram,
         llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
     )
 
     async def _run() -> None:
@@ -92,7 +109,51 @@ def test_ingest_telegram_handler_idle_when_no_updates() -> None:
         result = await ingest_telegram.process_claim(deps, claim=claim)
 
         assert result.success is True
-        assert "no new telegram updates" in result.detail
+        assert "no new telegram events" in result.detail
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_sends_standard_help_for_unsupported_events() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
+    )
+
+    async def _run() -> None:
+        telegram.events.append(
+            TelegramInboundEvent(
+                update_id="upd_002",
+                chat_id="chat_2",
+                telegram_user_id="tg_user_2",
+                kind="message",
+                command="/help",
+                text="/help",
+            )
+        )
+        claim = WorkItemClaim(item_id="poll-tick-3", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is True
+        assert "processed 1 telegram events" in result.detail
+        assert len(telegram.sent_texts) == 1
+        assert telegram.sent_texts[0][1].startswith("Я помогу Вам начать подачу заявки")
+        assert repository.submissions == {}
+        assert storage.writes == []
 
     asyncio.run(_run())
 
@@ -113,7 +174,12 @@ def test_handlers_execute_skeleton_flow() -> None:
     )
 
     async def _run() -> None:
-        candidate = await repository.create_candidate(first_name="A", last_name="B")
+        candidate = await repository.get_or_create_candidate_by_source(
+            source_type="telegram_chat",
+            source_external_id="chat-flow",
+            first_name="A",
+            last_name="B",
+        )
         assignment = await repository.create_assignment(title="Title", description="Desc")
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
@@ -152,7 +218,7 @@ def test_handlers_execute_skeleton_flow() -> None:
         assert repository.llm_runs
         assert repository.evaluations
         assert repository.deliveries
-        assert telegram.notifications[created.submission_id]
+        assert telegram.sent_texts
         assert llm.calls
         prompt = llm.calls[0].user_prompt
         assert "Title" in prompt
@@ -240,6 +306,57 @@ def test_export_handler_uses_storage_contract() -> None:
         assert result.export_id.startswith("exp_")
         assert result.download_url == f"/exports/{result.export_id}/download"
         assert result.export_ref.startswith("s3://exports/")
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_deliver_handler_requires_telegram_chat_mapping() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="Del", last_name="Iv")
+        assignment = await repository.create_assignment(title="D", description="D")
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="deliver-missing-chat",
+            initial_status="evaluated",
+        )
+        await repository.persist_evaluation(
+            submission_id=created.submission_id,
+            score_1_10=8,
+            criteria_scores_json={},
+            organizer_feedback_json={},
+            candidate_feedback_json={"summary": "ok"},
+            ai_assistance_likelihood=0.1,
+            ai_assistance_confidence=0.1,
+            reproducibility_subset={
+                "chain_version": "chain:v1",
+                "spec_version": "spec:v1",
+                "model": "model:v1",
+                "response_language": "en",
+            },
+        )
+        result = await deliver.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=created.submission_id, stage="exports", attempt=1),
+        )
+        assert result.success is False
+        assert result.error_code == "validation_error"
+        assert telegram.sent_texts == []
 
     asyncio.run(_run())
 

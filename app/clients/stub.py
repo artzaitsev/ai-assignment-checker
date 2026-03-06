@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 
 from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.dto import LLMClientRequest, LLMClientResult
+from app.domain.models import TelegramInboundEvent
 
 
 @dataclass
@@ -27,27 +29,25 @@ class StubStorageClient:
 
 @dataclass
 class StubTelegramClient:
-    updates: list[dict[str, str]] = field(default_factory=list)
-    notifications: dict[str, str] = field(default_factory=dict)
-    files: dict[str, bytes] = field(default_factory=dict)
+    events: list[TelegramInboundEvent] = field(default_factory=list)
+    sent_texts: list[tuple[str, str]] = field(default_factory=list)
+    _seen_sends: set[tuple[str, str]] = field(default_factory=set)
 
-    def poll_updates(self, *, timeout: int = 30) -> list[dict[str, str]]:
-        # Stub: сразу возвращает накопленные updates (без реального long-polling)
-        # timeout используется в production для long-polling Bot API
-        return list(self.updates)
+    def poll_events(self, *, timeout: int = 30, offset: str | None = None) -> list[TelegramInboundEvent]:
+        del timeout
+        if offset is not None:
+            for index, event in enumerate(self.events):
+                if event.update_id == offset:
+                    return list(self.events[index + 1 :])
+        return list(self.events)
 
-    def get_file_bytes(self, *, file_id: str) -> bytes:
-        payload = self.files.get(file_id)
-        if payload is None:
-            raise KeyError(f"telegram file is not found: {file_id}")
-        return payload
-
-    def send_result_notification(self, *, submission_id: str, message: str) -> str | None:
-        # Idempotent by submission id in stub mode.
-        if submission_id in self.notifications:
-            return f"msg:{submission_id}"
-        self.notifications[submission_id] = message
-        return f"msg:{submission_id}"
+    def send_text(self, *, chat_id: str, message: str) -> str | None:
+        key = (chat_id, message)
+        if key not in self._seen_sends:
+            self._seen_sends.add(key)
+            self.sent_texts.append(key)
+        digest = sha256(f"{chat_id}:{message}".encode("utf-8")).hexdigest()[:16]
+        return f"msg:{digest}"
 
 
 @dataclass

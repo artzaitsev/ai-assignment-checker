@@ -11,6 +11,7 @@ from app.domain.ids import new_assignment_public_id, new_candidate_public_id, ne
 from app.domain.lifecycle import ALLOWED_TRANSITIONS, STAGE_LIFECYCLES
 from app.domain.models import (
     AssignmentSnapshot,
+    CandidateSourceType,
     CandidateSnapshot,
     SortOrder,
     SubmissionFieldGroup,
@@ -33,6 +34,9 @@ except ModuleNotFoundError:  # pragma: no cover
 SQL_CREATE_CANDIDATE = load_sql("create_candidate.sql")
 SQL_CREATE_CANDIDATE_SOURCE = load_sql("create_candidate_source.sql")
 SQL_FIND_CANDIDATE_BY_SOURCE = load_sql("find_candidate_by_source.sql")
+SQL_FIND_CANDIDATE_SOURCE_EXTERNAL_ID = load_sql("find_candidate_source_external_id.sql")
+SQL_GET_STREAM_CURSOR = load_sql("get_stream_cursor.sql")
+SQL_SET_STREAM_CURSOR = load_sql("set_stream_cursor.sql")
 SQL_CREATE_ASSIGNMENT = load_sql("create_assignment.sql")
 SQL_LIST_ASSIGNMENTS = load_sql("list_assignments.sql")
 SQL_CLAIM_NEXT = load_sql("claim_next.sql")
@@ -63,6 +67,8 @@ def _is_unique_violation(exc: Exception) -> bool:
 class AsyncpgPoolManager:
     dsn: str
     pool: Any | None = None
+    singleton_lock_conn: Any | None = None
+    singleton_lock_key: int | None = None
 
     async def startup(self) -> None:
         if asyncpg_module is None:  # pragma: no cover
@@ -90,10 +96,46 @@ class AsyncpgPoolManager:
         )
 
     async def shutdown(self) -> None:
+        await self.release_singleton_lock()
         if self.pool is None:
             return
         await self.pool.close()
         self.pool = None
+
+    async def acquire_singleton_lock(self, *, lock_key: int) -> None:
+        if self.pool is None:
+            raise RuntimeError("postgres pool is not initialized")
+        if self.singleton_lock_conn is not None:
+            return
+        conn = await self.pool.acquire()
+        try:
+            acquired = await conn.fetchval("SELECT pg_try_advisory_lock($1::bigint)", lock_key)
+            if acquired is not True:
+                await self.pool.release(conn)
+                conn = None
+                raise RuntimeError(
+                    "singleton lock is already held; do not run multiple worker-ingest-telegram instances",
+                )
+        except Exception:
+            if conn is not None:
+                await self.pool.release(conn)
+            raise
+        self.singleton_lock_conn = conn
+        self.singleton_lock_key = lock_key
+
+    async def release_singleton_lock(self) -> None:
+        if self.pool is None or self.singleton_lock_conn is None or self.singleton_lock_key is None:
+            self.singleton_lock_conn = None
+            self.singleton_lock_key = None
+            return
+        conn = self.singleton_lock_conn
+        lock_key = self.singleton_lock_key
+        self.singleton_lock_conn = None
+        self.singleton_lock_key = None
+        try:
+            await conn.execute("SELECT pg_advisory_unlock($1::bigint)", lock_key)
+        finally:
+            await self.pool.release(conn)
 
 
 @dataclass
@@ -182,6 +224,40 @@ class PostgresWorkRepository:
                         last_name=existing["last_name"],
                     )
                 return created
+
+    async def find_candidate_source_external_id(
+        self,
+        *,
+        candidate_public_id: str,
+        source_type: CandidateSourceType,
+    ) -> str | None:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                SQL_FIND_CANDIDATE_SOURCE_EXTERNAL_ID,
+                candidate_public_id,
+                source_type,
+            )
+        if row is None:
+            return None
+        return _as_str(_record_get(row, "source_external_id"))
+
+    async def get_stream_cursor(self, *, stream: str) -> str | None:
+        # Cursor-only processing is not safe with multiple parallel pollers.
+        # Enforce singleton worker-ingest-telegram startup lock in bootstrap.
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(SQL_GET_STREAM_CURSOR, stream)
+        if row is None:
+            return None
+        return _as_str(_record_get(row, "cursor"))
+
+    async def set_stream_cursor(self, *, stream: str, cursor: str) -> None:
+        # Cursor-only processing is not safe with multiple parallel pollers.
+        # Enforce singleton worker-ingest-telegram startup lock in bootstrap.
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            await conn.execute(SQL_SET_STREAM_CURSOR, stream, cursor)
 
     async def create_assignment(
         self,

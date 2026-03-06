@@ -8,15 +8,15 @@ What these tests validate:
 - failure path: pipeline stops on evaluate error with `failed_evaluation`
 """
 
-import pytest
 from fastapi.testclient import TestClient
+import pytest
 
 from app.api.handlers import pipeline as pipeline_handler
 from app.api.http_app import build_app
 from app.domain.models import ProcessResult
 from app.roles import validate_role
 from app.services.bootstrap import build_runtime_container
-from tests.integration.api_seed import seed_candidate_and_assignment
+from tests.integration.api_seed import seed_candidate_and_assignment_with_source
 
 
 @pytest.mark.integration
@@ -33,7 +33,11 @@ def test_file_upload_and_synthetic_pipeline_end_to_end() -> None:
 
     with TestClient(app) as client:
         # Seed required dictionary entities before creating submission.
-        candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        candidate_public_id, assignment_public_id = seed_candidate_and_assignment_with_source(
+            client=client,
+            source_type="telegram_chat",
+            source_external_id="chat-synthetic-e2e",
+        )
 
         # Upload file submission (creates `uploaded` state and raw artifact link).
         upload_response = client.post(
@@ -99,7 +103,7 @@ def test_pipeline_stops_when_evaluation_fails(monkeypatch: pytest.MonkeyPatch) -
 
     with TestClient(app) as client:
         # Prepare one uploaded submission that can be processed by pipeline.
-        candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        candidate_public_id, assignment_public_id = seed_candidate_and_assignment_with_source(client=client)
 
         upload_response = client.post(
             "/submissions/file",

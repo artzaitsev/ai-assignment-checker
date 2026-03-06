@@ -11,11 +11,14 @@ from app.lib.artifacts import build_artifact_repository
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from app.repositories.stub import InMemoryWorkRepository
 from app.roles import RuntimeRole
+from app.services.runtime_settings import apply_session_settings_from_env, telegram_link_settings_from_env
 from app.workers.handlers.deps import WorkerDeps
 from app.workers.handlers.factory import build_process_handler
 from app.workers.loop import WorkerLoop
 from app.workers.roles import ROLE_TO_STAGE
 from app.workers.telegram_polling_loop import TelegramPollingWorkerLoop
+
+TELEGRAM_INGEST_SINGLETON_LOCK_KEY = 6_243_911_007
 
 
 @dataclass
@@ -38,7 +41,14 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
     if database_url:
         pool_manager = AsyncpgPoolManager(dsn=database_url)
         repository = PostgresWorkRepository(pool_manager=pool_manager)
-        on_startup = pool_manager.startup
+        if role.name == "worker-ingest-telegram":
+            async def _on_startup() -> None:
+                await pool_manager.startup()
+                await pool_manager.acquire_singleton_lock(lock_key=TELEGRAM_INGEST_SINGLETON_LOCK_KEY)
+
+            on_startup = _on_startup
+        else:
+            on_startup = pool_manager.startup
         on_shutdown = pool_manager.shutdown
     else:
         repository = InMemoryWorkRepository()
@@ -46,6 +56,8 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
     artifact_repository = build_artifact_repository(storage=storage)
     telegram = StubTelegramClient()
     llm = StubLLMClient()
+    telegram_link_settings = telegram_link_settings_from_env()
+    apply_session_settings = apply_session_settings_from_env()
     api_deps = ApiDeps(
         repository=repository,
         artifact_repository=artifact_repository,
@@ -53,6 +65,8 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
         telegram=telegram,
         llm=llm,
         submissions={},
+        telegram_link_settings=telegram_link_settings,
+        apply_session_settings=apply_session_settings,
     )
 
     worker_loop: WorkerLoop | None = None
@@ -63,6 +77,7 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
             storage=storage,
             telegram=telegram,
             llm=llm,
+            telegram_link_settings=telegram_link_settings,
         )
         loop_cls = TelegramPollingWorkerLoop if role.name == "worker-ingest-telegram" else WorkerLoop
         worker_loop = loop_cls(

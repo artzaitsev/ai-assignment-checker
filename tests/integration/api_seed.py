@@ -4,9 +4,22 @@ from fastapi.testclient import TestClient
 
 
 def seed_candidate_and_assignment(*, client: TestClient) -> tuple[str, str]:
+    return seed_candidate_and_assignment_with_source(client=client)
+
+
+def seed_candidate_and_assignment_with_source(
+    *,
+    client: TestClient,
+    source_type: str | None = None,
+    source_external_id: str | None = None,
+) -> tuple[str, str]:
+    candidate_payload: dict[str, str] = {"first_name": "Seed", "last_name": "Candidate"}
+    if source_type is not None and source_external_id is not None:
+        candidate_payload["source_type"] = source_type
+        candidate_payload["source_external_id"] = source_external_id
     candidate_response = client.post(
         "/candidates",
-        json={"first_name": "Seed", "last_name": "Candidate"},
+        json=candidate_payload,
     )
     assert candidate_response.status_code == 200
     candidate_public_id = candidate_response.json()["candidate_public_id"]

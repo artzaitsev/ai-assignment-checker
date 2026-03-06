@@ -17,11 +17,11 @@ COMPONENT_ID_EXPORT = "domain.export.prepare"
 def build_feedback(cmd: BuildFeedbackCommand) -> BuildFeedbackResult:
     """Build delivery notification payload from evaluated submission."""
     if cmd.score_1_10 is None:
-        headline = "Your submission was reviewed."
+        headline = "Ваша работа проверена."
     else:
-        headline = f"Your submission was reviewed. Score: {cmd.score_1_10}/10."
+        headline = f"Ваша работа проверена. Оценка: {cmd.score_1_10}/10."
 
-    summary = (cmd.summary or "Review details are available in your dashboard.").strip()
+    summary = (cmd.summary or "Подробности проверки доступны в Вашем личном кабинете.").strip()
     return BuildFeedbackResult(message_text=f"{headline} {summary}")
 
 
