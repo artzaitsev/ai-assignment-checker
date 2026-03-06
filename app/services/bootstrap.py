@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.api.handlers.deps import ApiDeps
-from app.clients.llm import RealOpenAICompatibleLLMClient
+from app.clients.llm import OpenAICompatibleLLMClient
 from app.clients.s3 import build_s3_storage_client
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.clients.telegram import RealTelegramClient
@@ -140,7 +140,7 @@ def _build_telegram_client(*, role: RuntimeRole, integration_mode: str) -> Teleg
 def _build_llm_client(*, role: RuntimeRole, integration_mode: str) -> LLMClient:
     if integration_mode == INTEGRATION_MODE_REAL and role.name == "worker-evaluate":
         llm_settings = llm_settings_from_env()
-        return RealOpenAICompatibleLLMClient(
+        return OpenAICompatibleLLMClient(
             api_key=llm_settings.api_key,
             base_url=llm_settings.base_url,
             model=llm_settings.model,
