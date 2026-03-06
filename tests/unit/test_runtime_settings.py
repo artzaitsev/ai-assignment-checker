@@ -172,3 +172,25 @@ def test_process_env_overrides_dotenv_values(
     exit_code = run(["--role", "api", "--dry-run-startup"])
 
     assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_dry_run_real_mode_reports_missing_s3_config_for_normalize_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("INTEGRATION_MODE", "real")
+    monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "strict")
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+
+    exit_code = run(["--role", "worker-normalize", "--dry-run-startup"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Runtime configuration validation failed for role 'worker-normalize'" in captured.err
+    assert "s3" in captured.err
+    assert "S3_ENDPOINT_URL" in captured.err
+    assert "S3_BUCKET" in captured.err
+    assert "S3_ACCESS_KEY_ID" in captured.err
+    assert "S3_SECRET_ACCESS_KEY" in captured.err
