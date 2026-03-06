@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.api.handlers.deps import ApiDeps
+from app.clients.s3 import build_s3_storage_client
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.domain.contracts import ArtifactRepository, LLMClient, StorageClient, TelegramClient, WorkRepository
 from app.lib.artifacts import build_artifact_repository
@@ -15,6 +16,7 @@ from app.services.runtime_settings import (
     apply_session_settings_from_env,
     database_settings_from_env,
     integration_mode_from_env,
+    s3_settings_from_env,
     telegram_link_settings_from_env,
 )
 from app.workers.handlers.deps import WorkerDeps
@@ -109,7 +111,15 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
 
 
 def _build_storage_client(*, integration_mode: str) -> StorageClient:
-    del integration_mode
+    if integration_mode == INTEGRATION_MODE_REAL:
+        s3_settings = s3_settings_from_env()
+        return build_s3_storage_client(
+            endpoint_url=s3_settings.endpoint_url,
+            bucket=s3_settings.bucket,
+            access_key_id=s3_settings.access_key_id,
+            secret_access_key=s3_settings.secret_access_key,
+            region=s3_settings.region,
+        )
     return StubStorageClient()
 
 

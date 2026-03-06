@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import NormalizePayloadCommand
 from app.domain.models import ProcessResult, WorkItemClaim
@@ -47,6 +48,16 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
 
 
 def _storage_key_from_ref(artifact_ref: str) -> str:
-    if "://" in artifact_ref:
-        return artifact_ref.split("://", maxsplit=1)[1]
-    return artifact_ref
+    if "://" not in artifact_ref:
+        return artifact_ref
+
+    remainder = artifact_ref.split("://", maxsplit=1)[1]
+    if any(remainder.startswith(prefix) for prefix in STORAGE_PREFIXES):
+        return remainder
+
+    if "/" in remainder:
+        candidate = remainder.split("/", maxsplit=1)[1]
+        if any(candidate.startswith(prefix) for prefix in STORAGE_PREFIXES):
+            return candidate
+
+    return remainder

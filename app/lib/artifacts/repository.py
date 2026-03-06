@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from app.domain.contracts import ArtifactRepository, StorageClient
+from app.domain.contracts import ArtifactRepository, STORAGE_PREFIXES, StorageClient
 from app.lib.artifacts.codecs import (
     decode_normalized,
     encode_export_rows,
@@ -69,6 +69,16 @@ class VersionedArtifactRepository(ArtifactRepository):
 
 
 def _storage_key_from_ref(ref: str) -> str:
-    if "://" in ref:
-        return ref.split("://", maxsplit=1)[1]
-    return ref
+    if "://" not in ref:
+        return ref
+
+    remainder = ref.split("://", maxsplit=1)[1]
+    if any(remainder.startswith(prefix) for prefix in STORAGE_PREFIXES):
+        return remainder
+
+    if "/" in remainder:
+        candidate = remainder.split("/", maxsplit=1)[1]
+        if any(candidate.startswith(prefix) for prefix in STORAGE_PREFIXES):
+            return candidate
+
+    return remainder
