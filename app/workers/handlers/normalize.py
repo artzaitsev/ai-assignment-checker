@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import NormalizePayloadCommand
 from app.domain.models import ProcessResult, WorkItemClaim
 from app.domain.use_cases.normalize import normalize_payload
+from app.lib.artifacts.refs import storage_key_from_ref
 from app.workers.handlers.deps import WorkerDeps
 
 COMPONENT_ID = "worker.normalize.process_claim"
@@ -14,7 +14,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     """Process normalize stage with strict schema validation."""
     try:
         raw_artifact_ref = await deps.repository.get_artifact_ref(item_id=claim.item_id, stage="raw")
-        raw_storage_key = _storage_key_from_ref(raw_artifact_ref)
+        raw_storage_key = storage_key_from_ref(raw_artifact_ref)
         deps.storage.get_bytes(key=raw_storage_key)
         result = normalize_payload(
             NormalizePayloadCommand(submission_id=claim.item_id, artifact_ref=raw_artifact_ref)
@@ -45,19 +45,3 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         ),
         artifact_version=result.schema_version,
     )
-
-
-def _storage_key_from_ref(artifact_ref: str) -> str:
-    if "://" not in artifact_ref:
-        return artifact_ref
-
-    remainder = artifact_ref.split("://", maxsplit=1)[1]
-    if any(remainder.startswith(prefix) for prefix in STORAGE_PREFIXES):
-        return remainder
-
-    if "/" in remainder:
-        candidate = remainder.split("/", maxsplit=1)[1]
-        if any(candidate.startswith(prefix) for prefix in STORAGE_PREFIXES):
-            return candidate
-
-    return remainder
