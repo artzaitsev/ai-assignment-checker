@@ -5,7 +5,6 @@ import importlib
 import json
 from typing import Any
 
-from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.errors import DomainInvariantError
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.ids import new_assignment_public_id, new_candidate_public_id, new_submission_public_id
@@ -25,6 +24,7 @@ from app.domain.models import (
     WorkItemClaim,
 )
 from app.repositories.sql_loader import load_sql
+from app.lib.artifacts.refs import canonical_ref_from_parts, parse_storage_ref
 
 try:
     asyncpg_module = importlib.import_module("asyncpg")
@@ -694,8 +694,13 @@ class PostgresWorkRepository:
         artifact_ref: str,
         artifact_version: str | None,
     ) -> None:
-        bucket = "skeleton"
-        object_key = _storage_key_from_ref(artifact_ref)
+        try:
+            parsed_ref = parse_storage_ref(artifact_ref)
+        except ValueError as exc:
+            raise DomainInvariantError(f"invalid artifact reference: {exc}") from exc
+
+        bucket = parsed_ref.bucket or ""
+        object_key = parsed_ref.object_key
         pool = self._pool()
         async with pool.acquire() as conn:
             await conn.execute(SQL_LINK_ARTIFACT, item_id, stage, bucket, object_key, artifact_version)
@@ -709,7 +714,8 @@ class PostgresWorkRepository:
         object_key = _as_str(_record_get(row, "object_key"))
         if object_key is None:
             raise KeyError(f"artifact object key is missing for submission={item_id} stage={stage}")
-        return object_key
+        bucket = _as_str(_record_get(row, "bucket"))
+        return canonical_ref_from_parts(bucket=bucket, object_key=object_key)
     async def persist_evaluation(
         self,
         *,
@@ -874,22 +880,6 @@ def _json_object(value: object) -> dict[str, object]:
         if isinstance(parsed, dict):
             return parsed
     return {}
-
-
-def _storage_key_from_ref(artifact_ref: str) -> str:
-    if "://" not in artifact_ref:
-        return artifact_ref
-
-    remainder = artifact_ref.split("://", maxsplit=1)[1]
-    if any(remainder.startswith(prefix) for prefix in STORAGE_PREFIXES):
-        return remainder
-
-    if "/" in remainder:
-        candidate = remainder.split("/", maxsplit=1)[1]
-        if any(candidate.startswith(prefix) for prefix in STORAGE_PREFIXES):
-            return candidate
-
-    return remainder
 
 
 def _record_get(row: object, key: str) -> object | None:
