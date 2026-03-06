@@ -1,5 +1,5 @@
-spec_version: chain-spec:v1
-chain_version: chain:v1
+spec_version: chain-spec:v2
+chain_version: chain:v2
 model: deepseek-chat
 
 runtime:
@@ -31,7 +31,8 @@ rubric:
 
 prompts:
   system: |
-    You are an evaluator. Return strict JSON only.
+    You are an evaluator. You must return **only** a valid JSON object, without any additional text, markdown, or code blocks. Do not wrap the JSON in ```json or any other formatting.
+
   user_template: |
     Response language: {{runtime.response_language}}
 
@@ -49,6 +50,35 @@ prompts:
 
     AI assistance policy:
     {{rubric.ai_assistance_policy}}
+
+    You must respond with a JSON object that exactly matches the following structure (no extra fields, no nesting under "evaluation"):
+    {
+      "score_1_10": integer (1-10),
+      "criteria": [
+        {
+          "id": string (one of correctness, completeness, code_quality, edge_cases),
+          "score": integer (1-10),
+          "reason": string
+        }
+      ],
+      "organizer_feedback": {
+        "strengths": list of strings,
+        "issues": list of strings,
+        "recommendations": list of strings
+      },
+      "candidate_feedback": {
+        "summary": string,
+        "what_went_well": list of strings,
+        "what_to_improve": list of strings
+      },
+      "ai_assistance": {
+        "likelihood": float (0-1),
+        "confidence": float (0-1),
+        "disclaimer": string
+      }
+    }
+
+    Ensure all required fields are present. Do not include any additional wrapping or text.
 
 llm_response:
   type: json

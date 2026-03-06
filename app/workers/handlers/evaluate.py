@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import os
 from pydantic import ValidationError
 
 from app.domain.evaluation_chain import load_chain_spec
@@ -23,8 +23,17 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             submission_id=claim.item_id,
             assignment_public_id=normalized_artifact.assignment_public_id,
         )
-        chain_spec = load_chain_spec(file_path=DEFAULT_CHAIN_SPEC_PATH)
-        result = evaluate_submission(
+        
+        #chain_spec = load_chain_spec(file_path=DEFAULT_CHAIN_SPEC_PATH)
+        # получаем из среды данные о CHAIN_VERSION. Нужно, чтобы можно было выбирать другую версиию
+        chain_version = os.getenv("CHAIN_VERSION", "v1")
+        
+        chain_spec_path = f"app/eval/chains/chain.{chain_version}.yaml"
+        chain_spec = load_chain_spec(file_path=chain_spec_path)
+
+
+        
+        result = await evaluate_submission(
             EvaluateSubmissionCommand(
                 submission_id=claim.item_id,
                 normalized_artifact=normalized_artifact,
@@ -34,7 +43,34 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             ),
             llm=deps.llm,
         )
+        
+        # ------------------
+        # Save llm_output
+        llm_output_key = f"llm_output/{claim.item_id}.json"
+        deps.storage.put_bytes(key=llm_output_key, payload=result.raw_output.encode("utf-8"))
+        await deps.repository.link_artifact(
+            item_id=claim.item_id,
+            stage="llm-output",
+            artifact_ref=llm_output_key,
+            artifact_version=result.chain_version,
+        )
+       
+
+        # Save feedback
+        feedback_text = _format_candidate_feedback(result.candidate_feedback_json)
+        feedback_key = f"feedback/{claim.item_id}.txt"
+        deps.storage.put_bytes(key=feedback_key, payload=feedback_text.encode("utf-8"))
+        await deps.repository.link_artifact(
+            item_id=claim.item_id,
+            stage="feedback",
+            artifact_ref=feedback_key,
+            artifact_version=None,
+        )
+    
+        # --------------------
+    
     except KeyError as exc:
+    
         error_code = resolve_stage_error(stage="llm-output", code="artifact_missing")
         return ProcessResult(
             success=False,
@@ -43,6 +79,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             retry_classification=classify_error(error_code),
         )
     except (ValueError, ValidationError) as exc:
+   
         error_code = resolve_stage_error(stage="llm-output", code="schema_validation_failed")
         return ProcessResult(
             success=False,
@@ -51,6 +88,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             retry_classification=classify_error(error_code),
         )
     except Exception as exc:  # pragma: no cover
+        
         error_code = resolve_stage_error(stage="llm-output", code="llm_provider_unavailable")
         return ProcessResult(
             success=False,
@@ -73,6 +111,8 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         tokens_output=result.tokens_output,
         latency_ms=result.latency_ms,
     )
+    
+
     await deps.repository.persist_evaluation(
         submission_id=claim.item_id,
         score_1_10=result.score_1_10,
@@ -83,11 +123,12 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         ai_assistance_confidence=result.ai_assistance_confidence,
         reproducibility_subset=result.reproducibility_subset,
     )
-
+   
     return ProcessResult(
         success=True,
         detail="evaluation persisted in relational store",
     )
+
 
 
 async def _resolve_assignment(
@@ -109,3 +150,16 @@ async def _resolve_assignment(
 
     joined_ids = ", ".join(assignment_candidates)
     raise KeyError(f"assignment not found: {joined_ids}")
+
+def _format_candidate_feedback(candidate_json: dict) -> str:
+    summary = candidate_json.get("summary", "")
+    went_well = candidate_json.get("what_went_well", [])
+    to_improve = candidate_json.get("what_to_improve", [])
+    lines = [summary]
+    if went_well:
+        lines.append("\n✅ Что получилось хорошо:")
+        lines.extend(f"  • {item}" for item in went_well)
+    if to_improve:
+        lines.append("\n🔧 Что можно улучшить:")
+        lines.extend(f"  • {item}" for item in to_improve)
+    return "\n".join(lines)

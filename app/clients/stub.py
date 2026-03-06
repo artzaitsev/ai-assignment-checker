@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.dto import LLMClientRequest, LLMClientResult
+import asyncio
 
 
 @dataclass
@@ -54,8 +55,9 @@ class StubTelegramClient:
 class StubLLMClient:
     calls: list[LLMClientRequest] = field(default_factory=list)
 
-    def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
+    async def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
         self.calls.append(request)
+        await asyncio.sleep(0.1)  # имитация сетевой задержки
         default_json: dict[str, object] = {
             "criteria": [
                 {"id": "correctness", "score": 8, "reason": "Core logic is mostly correct"},

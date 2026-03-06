@@ -15,7 +15,7 @@ from app.workers.handlers.deps import WorkerDeps
 from app.workers.handlers.factory import build_process_handler
 from app.workers.loop import WorkerLoop
 from app.workers.roles import ROLE_TO_STAGE
-
+from app.clients.openai_compatible import OpenAICompatibleClient
 
 @dataclass
 class RuntimeContainer:
@@ -44,7 +44,19 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
     storage = StubStorageClient()
     artifact_repository = build_artifact_repository(storage=storage)
     telegram = StubTelegramClient()
-    llm = StubLLMClient()
+    
+    # Actual LLM
+    llm_api_key = os.getenv("LLM_API_KEY")
+    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1/chat/completions")
+    llm_timeout = float(os.getenv("LLM_TIMEOUT", "60"))
+    print(llm_api_key)
+
+    if llm_api_key:
+        llm = OpenAICompatibleClient(api_key=llm_api_key, base_url=llm_base_url, timeout=llm_timeout)
+    else:
+        llm = StubLLMClient()
+
+
     api_deps = ApiDeps(
         repository=repository,
         artifact_repository=artifact_repository,

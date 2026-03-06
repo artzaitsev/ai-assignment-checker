@@ -25,6 +25,8 @@ STORAGE_PREFIXES = (
     "normalized/",
     "exports/",
     "eval/",
+    "llm_output/",
+    "feedback/",
 )
 
 
@@ -198,4 +200,4 @@ class TelegramClient(Protocol):
 
 @runtime_checkable
 class LLMClient(Protocol):
-    def evaluate(self, request: LLMClientRequest) -> LLMClientResult: ...
+    async def evaluate(self, request: LLMClientRequest) -> LLMClientResult: ...

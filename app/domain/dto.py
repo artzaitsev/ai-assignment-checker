@@ -92,6 +92,7 @@ class EvaluateSubmissionResult:
     ai_assistance_likelihood: float
     ai_assistance_confidence: float
     reproducibility_subset: dict[str, str]
+    raw_output: str   # сырой ответ LLM (JSON строка)
 
 
 @dataclass(frozen=True)
