@@ -50,6 +50,7 @@ class S3RuntimeSettings:
 @dataclass(frozen=True)
 class TelegramBotRuntimeSettings:
     bot_token: str
+    api_base_url: str
 
 
 @dataclass(frozen=True)
@@ -173,7 +174,10 @@ def s3_settings_from_env() -> S3RuntimeSettings:
 
 
 def telegram_bot_settings_from_env() -> TelegramBotRuntimeSettings:
-    return TelegramBotRuntimeSettings(bot_token=_read_required_value("TELEGRAM_BOT_TOKEN"))
+    bot_token = _read_required_value("TELEGRAM_BOT_TOKEN")
+    api_base_url = os_environ.get("TELEGRAM_BOT_API_BASE_URL", "https://api.telegram.org").strip().rstrip("/")
+    _validate_http_url(value=api_base_url, env_name="TELEGRAM_BOT_API_BASE_URL")
+    return TelegramBotRuntimeSettings(bot_token=bot_token, api_base_url=api_base_url)
 
 
 def llm_settings_from_env() -> LLMRuntimeSettings:

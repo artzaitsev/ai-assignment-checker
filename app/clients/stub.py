@@ -32,13 +32,19 @@ class StubTelegramClient:
     events: list[TelegramInboundEvent] = field(default_factory=list)
     sent_texts: list[tuple[str, str]] = field(default_factory=list)
     _seen_sends: set[tuple[str, str]] = field(default_factory=set)
+    last_poll_offset: str | None = None
 
     def poll_events(self, *, timeout: int = 30, offset: str | None = None) -> list[TelegramInboundEvent]:
         del timeout
+        self.last_poll_offset = offset
         if offset is not None:
-            for index, event in enumerate(self.events):
-                if event.update_id == offset:
-                    return list(self.events[index + 1 :])
+            try:
+                numeric_offset = int(offset)
+                return [event for event in self.events if int(event.update_id) >= numeric_offset]
+            except ValueError:
+                for index, event in enumerate(self.events):
+                    if event.update_id == offset:
+                        return list(self.events[index + 1 :])
         return list(self.events)
 
     def send_text(self, *, chat_id: str, message: str) -> str | None:
