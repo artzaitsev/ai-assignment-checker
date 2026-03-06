@@ -60,6 +60,7 @@ from app.workers.runner import (
 def build_app(
     role: str,
     run_id: str,
+    integration_mode: str = "stub",
     worker_loop: WorkerLoop | None = None,
     worker_runtime_settings: WorkerRuntimeSettings | None = None,
     api_deps: ApiDeps | None = None,
@@ -78,7 +79,12 @@ def build_app(
 
         logger.info(
             "role started",
-            extra={"role": role, "service": role, "run_id": run_id},
+            extra={
+                "role": role,
+                "service": role,
+                "run_id": run_id,
+                "integration_mode": integration_mode,
+            },
         )
 
         if on_startup is not None:
@@ -111,7 +117,12 @@ def build_app(
 
         logger.info(
             "role stopped",
-            extra={"role": role, "service": role, "run_id": run_id},
+            extra={
+                "role": role,
+                "service": role,
+                "run_id": run_id,
+                "integration_mode": integration_mode,
+            },
         )
 
     app = FastAPI(title="ai-assignment-checker", version="0.1.0", lifespan=lifespan)

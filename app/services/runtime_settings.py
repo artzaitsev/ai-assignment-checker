@@ -7,12 +7,30 @@ from urllib.parse import urlparse
 
 from app.domain.models import ApplySessionSettings, TelegramLinkSettings
 
+INTEGRATION_MODE_STUB = "stub"
+INTEGRATION_MODE_REAL = "real"
+SUPPORTED_INTEGRATION_MODES = (
+    INTEGRATION_MODE_STUB,
+    INTEGRATION_MODE_REAL,
+)
+
 RUNTIME_VALIDATION_MODE_DEV = "dev"
 RUNTIME_VALIDATION_MODE_STRICT = "strict"
 SUPPORTED_RUNTIME_VALIDATION_MODES = (
     RUNTIME_VALIDATION_MODE_DEV,
     RUNTIME_VALIDATION_MODE_STRICT,
 )
+
+CANONICAL_ENV_ALIASES: dict[str, tuple[str, ...]] = {
+    "DATABASE_URL": ("DB_URL",),
+    "S3_ENDPOINT_URL": ("S3_URL",),
+    "S3_ACCESS_KEY_ID": ("AWS_ACCESS_KEY_ID",),
+    "S3_SECRET_ACCESS_KEY": ("AWS_SECRET_ACCESS_KEY",),
+    "TELEGRAM_BOT_TOKEN": ("TELEGRAM_TOKEN",),
+    "LLM_API_KEY": ("OPENAI_API_KEY",),
+    "LLM_BASE_URL": ("OPENAI_BASE_URL",),
+    "LLM_MODEL": ("OPENAI_MODEL",),
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +59,14 @@ class LLMRuntimeSettings:
     model: str
 
 
+def integration_mode_from_env() -> str:
+    mode = os_environ.get("INTEGRATION_MODE", INTEGRATION_MODE_STUB).strip().lower()
+    if mode in SUPPORTED_INTEGRATION_MODES:
+        return mode
+    supported = ", ".join(SUPPORTED_INTEGRATION_MODES)
+    raise ValueError(f"INTEGRATION_MODE must be one of: {supported}")
+
+
 def runtime_validation_mode_from_env() -> str:
     mode = os_environ.get("RUNTIME_VALIDATION_MODE", RUNTIME_VALIDATION_MODE_DEV).strip().lower()
     if mode in SUPPORTED_RUNTIME_VALIDATION_MODES:
@@ -50,7 +76,12 @@ def runtime_validation_mode_from_env() -> str:
 
 
 def validate_runtime_configuration_for_role(*, role_name: str) -> None:
+    _validate_unsupported_alias_env_keys()
+    integration_mode = integration_mode_from_env()
     if runtime_validation_mode_from_env() != RUNTIME_VALIDATION_MODE_STRICT:
+        return
+
+    if integration_mode != INTEGRATION_MODE_REAL:
         return
 
     validators: tuple[tuple[str, Callable[[], object]], ...] = _strict_role_validators(role_name)
@@ -87,6 +118,19 @@ def _strict_role_validators(role_name: str) -> tuple[tuple[str, Callable[[], obj
         ),
     }
     return role_to_validators.get(role_name, ())
+
+
+def _validate_unsupported_alias_env_keys() -> None:
+    errors: list[str] = []
+    for canonical_key, aliases in CANONICAL_ENV_ALIASES.items():
+        for alias in aliases:
+            alias_value = os_environ.get(alias, "").strip()
+            if alias_value:
+                errors.append(
+                    f"{alias} is not supported; use canonical key {canonical_key}"
+                )
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def database_settings_from_env() -> DatabaseRuntimeSettings:
