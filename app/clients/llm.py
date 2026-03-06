@@ -21,7 +21,7 @@ class LLMRetryableError(LLMAdapterError):
 
 
 @dataclass(frozen=True)
-class RealOpenAICompatibleLLMClient:
+class OpenAICompatibleLLMClient:
     api_key: str
     base_url: str
     model: str

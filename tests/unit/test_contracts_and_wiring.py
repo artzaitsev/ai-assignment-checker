@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.clients.llm import RealOpenAICompatibleLLMClient
+from app.clients.llm import OpenAICompatibleLLMClient
 from app.clients.stub import StubLLMClient, StubStorageClient
 from app.domain.contracts import CLAIM_SQL_CONTRACT, STORAGE_PREFIXES
 from app.repositories.postgres import PostgresWorkRepository
@@ -183,7 +183,7 @@ def test_real_mode_wires_real_llm_client_for_evaluate_worker(monkeypatch: pytest
     role = validate_role("worker-evaluate")
     container = build_runtime_container(role, integration_mode="real")
 
-    assert isinstance(container.llm, RealOpenAICompatibleLLMClient)
+    assert isinstance(container.llm, OpenAICompatibleLLMClient)
 
 
 @pytest.mark.unit

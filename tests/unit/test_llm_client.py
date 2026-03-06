@@ -6,19 +6,19 @@ from urllib import error as urllib_error
 
 import pytest
 
-from app.clients.llm import LLMAdapterError, LLMRetryableError, RealOpenAICompatibleLLMClient
+from app.clients.llm import LLMAdapterError, LLMRetryableError, OpenAICompatibleLLMClient
 from app.domain.dto import LLMClientRequest
 
 
 @pytest.mark.unit
 def test_evaluate_maps_openai_compatible_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RealOpenAICompatibleLLMClient(
+    client = OpenAICompatibleLLMClient(
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
     )
 
-    def _fake_request_json(self: RealOpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
+    def _fake_request_json(self: OpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
         del self
         assert payload["model"] == "gpt-test"
         assert payload["temperature"] == 0.2
@@ -37,7 +37,7 @@ def test_evaluate_maps_openai_compatible_response(monkeypatch: pytest.MonkeyPatc
             },
         }
 
-    monkeypatch.setattr(RealOpenAICompatibleLLMClient, "_request_json", _fake_request_json)
+    monkeypatch.setattr(OpenAICompatibleLLMClient, "_request_json", _fake_request_json)
 
     result = client.evaluate(
         LLMClientRequest(
@@ -59,17 +59,17 @@ def test_evaluate_maps_openai_compatible_response(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.unit
 def test_evaluate_maps_missing_content_to_schema_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RealOpenAICompatibleLLMClient(
+    client = OpenAICompatibleLLMClient(
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
     )
 
-    def _fake_request_json(self: RealOpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
+    def _fake_request_json(self: OpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
         del self, payload
         return {"choices": [{"message": {"content": ""}}]}
 
-    monkeypatch.setattr(RealOpenAICompatibleLLMClient, "_request_json", _fake_request_json)
+    monkeypatch.setattr(OpenAICompatibleLLMClient, "_request_json", _fake_request_json)
 
     with pytest.raises(ValueError, match="non-empty string"):
         client.evaluate(
@@ -86,7 +86,7 @@ def test_evaluate_maps_missing_content_to_schema_error(monkeypatch: pytest.Monke
 
 @pytest.mark.unit
 def test_request_json_maps_timeout_to_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RealOpenAICompatibleLLMClient(
+    client = OpenAICompatibleLLMClient(
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
@@ -104,7 +104,7 @@ def test_request_json_maps_timeout_to_retryable(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.unit
 def test_request_json_maps_400_to_non_retryable(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RealOpenAICompatibleLLMClient(
+    client = OpenAICompatibleLLMClient(
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
