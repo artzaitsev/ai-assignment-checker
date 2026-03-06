@@ -13,7 +13,7 @@ from app.api.http_app import build_app
 from app.logging_setup import configure_logging
 from app.roles import SUPPORTED_ROLES, validate_role
 from app.services.bootstrap import build_runtime_container
-from app.services.runtime_settings import validate_runtime_configuration_for_role
+from app.services.runtime_settings import integration_mode_from_env, validate_runtime_configuration_for_role
 
 
 def _default_port(role: str) -> int:
@@ -45,12 +45,14 @@ def create_runtime_app() -> object:
     role_name = os.getenv("APP_ROLE", "api")
     role = validate_role(role_name)
     validate_runtime_configuration_for_role(role_name=role.name)
+    integration_mode = integration_mode_from_env()
     run_id = str(uuid.uuid4())
     configure_logging()
     container = build_runtime_container(role)
     return build_app(
         role=role.name,
         run_id=run_id,
+        integration_mode=integration_mode,
         worker_loop=container.worker_loop,
         api_deps=container.api_deps,
         on_startup=container.on_startup,
@@ -74,9 +76,20 @@ def run(argv: list[str] | None = None) -> int:
     run_id = str(uuid.uuid4())
     logger = logging.getLogger("runtime")
 
+    try:
+        integration_mode = integration_mode_from_env()
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 2
+
     logger.info(
         "runtime initialized",
-        extra={"role": role.name, "service": role.name, "run_id": run_id},
+        extra={
+            "role": role.name,
+            "service": role.name,
+            "run_id": run_id,
+            "integration_mode": integration_mode,
+        },
     )
 
     try:
@@ -88,7 +101,12 @@ def run(argv: list[str] | None = None) -> int:
     if args.dry_run_startup:
         logger.info(
             "dry-run startup complete",
-            extra={"role": role.name, "service": role.name, "run_id": run_id},
+            extra={
+                "role": role.name,
+                "service": role.name,
+                "run_id": run_id,
+                "integration_mode": integration_mode,
+            },
         )
         return 0
 
@@ -108,6 +126,7 @@ def run(argv: list[str] | None = None) -> int:
         app = build_app(
             role=role.name,
             run_id=run_id,
+            integration_mode=integration_mode,
             worker_loop=container.worker_loop,
             api_deps=container.api_deps,
             on_startup=container.on_startup,
