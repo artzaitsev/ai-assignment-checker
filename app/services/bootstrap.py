@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.api.handlers.deps import ApiDeps
+from app.clients.llm import RealOpenAICompatibleLLMClient
 from app.clients.s3 import build_s3_storage_client
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.clients.telegram import RealTelegramClient
@@ -17,6 +18,7 @@ from app.services.runtime_settings import (
     apply_session_settings_from_env,
     database_settings_from_env,
     integration_mode_from_env,
+    llm_settings_from_env,
     s3_settings_from_env,
     telegram_bot_settings_from_env,
     telegram_link_settings_from_env,
@@ -66,8 +68,8 @@ def build_runtime_container(role: RuntimeRole, *, integration_mode: str | None =
 
     storage = _build_storage_client(integration_mode=resolved_integration_mode)
     artifact_repository = build_artifact_repository(storage=storage)
-    telegram = _build_telegram_client(integration_mode=resolved_integration_mode)
-    llm = _build_llm_client(integration_mode=resolved_integration_mode)
+    telegram = _build_telegram_client(role=role, integration_mode=resolved_integration_mode)
+    llm = _build_llm_client(role=role, integration_mode=resolved_integration_mode)
     telegram_link_settings = telegram_link_settings_from_env()
     apply_session_settings = apply_session_settings_from_env()
     api_deps = ApiDeps(
@@ -125,8 +127,8 @@ def _build_storage_client(*, integration_mode: str) -> StorageClient:
     return StubStorageClient()
 
 
-def _build_telegram_client(*, integration_mode: str) -> TelegramClient:
-    if integration_mode == INTEGRATION_MODE_REAL:
+def _build_telegram_client(*, role: RuntimeRole, integration_mode: str) -> TelegramClient:
+    if integration_mode == INTEGRATION_MODE_REAL and role.name in {"worker-ingest-telegram", "worker-deliver"}:
         telegram_settings = telegram_bot_settings_from_env()
         return RealTelegramClient(
             bot_token=telegram_settings.bot_token,
@@ -135,6 +137,12 @@ def _build_telegram_client(*, integration_mode: str) -> TelegramClient:
     return StubTelegramClient()
 
 
-def _build_llm_client(*, integration_mode: str) -> LLMClient:
-    del integration_mode
+def _build_llm_client(*, role: RuntimeRole, integration_mode: str) -> LLMClient:
+    if integration_mode == INTEGRATION_MODE_REAL and role.name == "worker-evaluate":
+        llm_settings = llm_settings_from_env()
+        return RealOpenAICompatibleLLMClient(
+            api_key=llm_settings.api_key,
+            base_url=llm_settings.base_url,
+            model=llm_settings.model,
+        )
     return StubLLMClient()

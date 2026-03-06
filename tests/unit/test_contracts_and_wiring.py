@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from app.clients.stub import StubStorageClient
+from app.clients.llm import RealOpenAICompatibleLLMClient
+from app.clients.stub import StubLLMClient, StubStorageClient
 from app.domain.contracts import CLAIM_SQL_CONTRACT, STORAGE_PREFIXES
 from app.repositories.postgres import PostgresWorkRepository
 from app.repositories.stub import InMemoryWorkRepository
@@ -22,6 +23,9 @@ def _clear_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "S3_ACCESS_KEY_ID",
         "S3_SECRET_ACCESS_KEY",
         "S3_REGION",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -32,6 +36,12 @@ def _set_s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-key")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret")
     monkeypatch.setenv("S3_REGION", "us-east-1")
+
+
+def _set_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://agent.timeweb.cloud/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
 
 
 @pytest.mark.unit
@@ -116,6 +126,7 @@ def test_real_mode_uses_postgres_repository_when_database_url_present(monkeypatc
     _clear_mode_env(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
     _set_s3_env(monkeypatch)
+    _set_llm_env(monkeypatch)
 
     role = validate_role("api")
     container = build_runtime_container(role, integration_mode="real")
@@ -128,6 +139,7 @@ def test_real_mode_wires_s3_storage_into_artifact_repository(monkeypatch: pytest
     _clear_mode_env(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
     _set_s3_env(monkeypatch)
+    _set_llm_env(monkeypatch)
 
     class FakeS3StorageClient:
         def put_bytes(self, *, key: str, payload: bytes) -> str:
@@ -151,12 +163,38 @@ def test_stub_mode_stays_stubbed_even_when_s3_env_is_present(monkeypatch: pytest
     _clear_mode_env(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
     _set_s3_env(monkeypatch)
+    _set_llm_env(monkeypatch)
 
     role = validate_role("api")
     container = build_runtime_container(role, integration_mode="stub")
 
     assert isinstance(container.storage, StubStorageClient)
     assert isinstance(container.repository, InMemoryWorkRepository)
+    assert isinstance(container.llm, StubLLMClient)
+
+
+@pytest.mark.unit
+def test_real_mode_wires_real_llm_client_for_evaluate_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_mode_env(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    _set_s3_env(monkeypatch)
+    _set_llm_env(monkeypatch)
+
+    role = validate_role("worker-evaluate")
+    container = build_runtime_container(role, integration_mode="real")
+
+    assert isinstance(container.llm, RealOpenAICompatibleLLMClient)
+
+
+@pytest.mark.unit
+def test_real_mode_requires_llm_config_for_evaluate_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_mode_env(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    _set_s3_env(monkeypatch)
+
+    role = validate_role("worker-evaluate")
+    with pytest.raises(ValueError, match="LLM_API_KEY"):
+        build_runtime_container(role, integration_mode="real")
 
 
 @pytest.mark.unit
