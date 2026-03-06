@@ -48,7 +48,7 @@ def create_runtime_app() -> object:
     integration_mode = integration_mode_from_env()
     run_id = str(uuid.uuid4())
     configure_logging()
-    container = build_runtime_container(role)
+    container = build_runtime_container(role, integration_mode=integration_mode)
     return build_app(
         role=role.name,
         run_id=run_id,
@@ -110,7 +110,7 @@ def run(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    container = build_runtime_container(role)
+    container = build_runtime_container(role, integration_mode=integration_mode)
     port = args.port if args.port is not None else _default_port(role.name)
     if args.reload:
         os.environ["APP_ROLE"] = role.name

@@ -41,11 +41,11 @@ class RuntimeContainer:
     on_shutdown: Callable[[], Awaitable[None]] | None
 
 
-def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
-    integration_mode = integration_mode_from_env()
+def build_runtime_container(role: RuntimeRole, *, integration_mode: str | None = None) -> RuntimeContainer:
+    resolved_integration_mode = integration_mode or integration_mode_from_env()
     on_startup: Callable[[], Awaitable[None]] | None = None
     on_shutdown: Callable[[], Awaitable[None]] | None = None
-    if integration_mode == INTEGRATION_MODE_REAL:
+    if resolved_integration_mode == INTEGRATION_MODE_REAL:
         database_settings = database_settings_from_env()
         pool_manager = AsyncpgPoolManager(dsn=database_settings.database_url)
         repository = PostgresWorkRepository(pool_manager=pool_manager)
@@ -62,10 +62,10 @@ def build_runtime_container(role: RuntimeRole) -> RuntimeContainer:
     else:
         repository = InMemoryWorkRepository()
 
-    storage = _build_storage_client(integration_mode=integration_mode)
+    storage = _build_storage_client(integration_mode=resolved_integration_mode)
     artifact_repository = build_artifact_repository(storage=storage)
-    telegram = _build_telegram_client(integration_mode=integration_mode)
-    llm = _build_llm_client(integration_mode=integration_mode)
+    telegram = _build_telegram_client(integration_mode=resolved_integration_mode)
+    llm = _build_llm_client(integration_mode=resolved_integration_mode)
     telegram_link_settings = telegram_link_settings_from_env()
     apply_session_settings = apply_session_settings_from_env()
     api_deps = ApiDeps(
