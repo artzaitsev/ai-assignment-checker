@@ -328,6 +328,7 @@ def test_handlers_execute_skeleton_flow() -> None:
         assert deliver_result.success is True
         assert deliver_result.artifact_ref is None
         assert repository.llm_runs
+        assert repository.llm_runs[0]["api_base"] == llm.base_url
         assert repository.evaluations
         assert repository.deliveries
         assert telegram.sent_texts

@@ -58,6 +58,7 @@ class StubTelegramClient:
 
 @dataclass
 class StubLLMClient:
+    base_url: str = "https://stub-llm.invalid"
     calls: list[LLMClientRequest] = field(default_factory=list)
 
     def evaluate(self, request: LLMClientRequest) -> LLMClientResult:

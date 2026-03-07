@@ -20,6 +20,7 @@ logger = logging.getLogger("runtime")
 async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
     """Process evaluate stage with schema and reproducibility contracts."""
     try:
+        configured_api_base = _resolve_llm_api_base(llm=deps.llm)
         normalized_artifact_ref = await deps.repository.get_artifact_ref(item_id=claim.item_id, stage="normalized")
         normalized_artifact = deps.artifact_repository.load_normalized(artifact_ref=normalized_artifact_ref)
         assignment = await _resolve_assignment(
@@ -82,7 +83,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         submission_id=claim.item_id,
         provider="openai-compatible",
         model=result.model,
-        api_base="https://example.invalid",
+        api_base=configured_api_base,
         chain_version=result.chain_version,
         spec_version=chain_spec.spec_version,
         response_language=result.response_language,
@@ -162,3 +163,10 @@ async def _load_persisted_chain_digest(deps: WorkerDeps, *, submission_id: str) 
     if not isinstance(digest, str) or not digest:
         return None
     return digest
+
+
+def _resolve_llm_api_base(*, llm: object) -> str:
+    api_base = getattr(llm, "base_url", None)
+    if isinstance(api_base, str) and api_base.strip():
+        return api_base
+    raise ValueError("llm client base_url must be configured")
