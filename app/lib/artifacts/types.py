@@ -32,6 +32,7 @@ class ExportRowArtifact(BaseModel):
     score_1_10: int = Field(ge=1, le=10)
     # Flattened text fields for spreadsheet compatibility.
     criteria_summary: str
+    task_scores_summary: str
     strengths: str
     issues: str
     recommendations: str

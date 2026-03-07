@@ -76,6 +76,7 @@ def prepare_export(cmd: PrepareExportCommand) -> PrepareExportResult:
             for criterion in criteria_items
             if isinstance(criterion, dict)
         )
+        task_scores_summary = _build_task_scores_summary(criteria_json)
 
         strengths = _join_text_list(organizer_feedback.get("strengths"))
         issues = _join_text_list(organizer_feedback.get("issues"))
@@ -87,6 +88,7 @@ def prepare_export(cmd: PrepareExportCommand) -> PrepareExportResult:
                 assignment_identifier=item.assignment.public_id if item.assignment else "",
                 score_1_10=evaluation.score_1_10,
                 criteria_summary=criteria_summary,
+                task_scores_summary=task_scores_summary,
                 strengths=strengths,
                 issues=issues,
                 recommendations=recommendations,
@@ -104,3 +106,23 @@ def _join_text_list(value: object) -> str:
     if not isinstance(value, list):
         return ""
     return "; ".join(str(item) for item in value)
+
+
+def _build_task_scores_summary(criteria_json: dict[str, object]) -> str:
+    task_order_raw = criteria_json.get("task_order")
+    task_scores_raw = criteria_json.get("task_scores")
+    if not isinstance(task_order_raw, list) or not isinstance(task_scores_raw, dict):
+        return ""
+
+    task_order: list[str] = [task_id for task_id in task_order_raw if isinstance(task_id, str)]
+    if len(task_order) != len(task_order_raw):
+        return ""
+
+    parts: list[str] = []
+    for task_id in task_order:
+        score = task_scores_raw.get(task_id)
+        if not isinstance(score, int):
+            continue
+        safe_task_id = task_id.encode("ascii", errors="ignore").decode("ascii")
+        parts.append(f"{safe_task_id}:{score}")
+    return ";".join(parts)

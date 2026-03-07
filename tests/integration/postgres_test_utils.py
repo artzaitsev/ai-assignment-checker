@@ -15,8 +15,14 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MIGRATION_UP = PROJECT_ROOT / "db" / "migrations" / "000001_bootstrap.up.sql"
-MIGRATION_DOWN = PROJECT_ROOT / "db" / "migrations" / "000001_bootstrap.down.sql"
+MIGRATIONS_DIR = PROJECT_ROOT / "db" / "migrations"
+
+
+def _migration_paths(*, direction: str) -> list[Path]:
+    paths = sorted(MIGRATIONS_DIR.glob(f"*.{direction}.sql"))
+    if direction == "down":
+        paths.reverse()
+    return paths
 
 
 def postgres_dsn() -> str:
@@ -54,7 +60,8 @@ async def reset_public_schema(*, dsn: str) -> None:
 async def apply_up(*, dsn: str) -> None:
     conn = await _asyncpg().connect(dsn=dsn)
     try:
-        await conn.execute(MIGRATION_UP.read_text(encoding="utf-8"))
+        for path in _migration_paths(direction="up"):
+            await conn.execute(path.read_text(encoding="utf-8"))
     finally:
         await conn.close()
 
@@ -62,7 +69,8 @@ async def apply_up(*, dsn: str) -> None:
 async def apply_down(*, dsn: str) -> None:
     conn = await _asyncpg().connect(dsn=dsn)
     try:
-        await conn.execute(MIGRATION_DOWN.read_text(encoding="utf-8"))
+        for path in _migration_paths(direction="down"):
+            await conn.execute(path.read_text(encoding="utf-8"))
     finally:
         await conn.close()
 

@@ -1,0 +1,45 @@
+{
+  "assignment": {
+    "title": "Synthetic Backend Screening",
+    "description": "Evaluate a compact service implementation and brief architecture note.",
+    "criteria_schema_json": {
+      "schema_version": "task-criteria:v1",
+      "tasks": [
+        {
+          "task_id": "task_service_logic",
+          "title": "Service Logic",
+          "weight": 0.6,
+          "criteria": [
+            {
+              "criterion_id": "correctness",
+              "description": "Core behavior follows requirements.",
+              "weight": 0.5
+            },
+            {
+              "criterion_id": "error_handling",
+              "description": "Failure paths are handled predictably.",
+              "weight": 0.5
+            }
+          ]
+        },
+        {
+          "task_id": "task_architecture_note",
+          "title": "Architecture Note",
+          "weight": 0.4,
+          "criteria": [
+            {
+              "criterion_id": "clarity",
+              "description": "Trade-offs are clearly explained.",
+              "weight": 0.6
+            },
+            {
+              "criterion_id": "justification",
+              "description": "Design choices are justified with constraints.",
+              "weight": 0.4
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

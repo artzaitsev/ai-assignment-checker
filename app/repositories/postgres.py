@@ -265,6 +265,7 @@ class PostgresWorkRepository:
         *,
         title: str,
         description: str,
+        criteria_schema_json: dict[str, object] | None = None,
         is_active: bool = True,
     ) -> AssignmentSnapshot:
         pool = self._pool()
@@ -272,13 +273,21 @@ class PostgresWorkRepository:
             for _ in range(5):
                 assignment_public_id = new_assignment_public_id()
                 try:
-                    row = await conn.fetchrow(SQL_CREATE_ASSIGNMENT, assignment_public_id, title, description, is_active)
+                    row = await conn.fetchrow(
+                        SQL_CREATE_ASSIGNMENT,
+                        assignment_public_id,
+                        title,
+                        description,
+                        criteria_schema_json,
+                        is_active,
+                    )
                     if row is None:
                         raise DomainInvariantError("failed to create assignment")
                     return AssignmentSnapshot(
                         assignment_public_id=row["public_id"],
                         title=row["title"],
                         description=row["description"],
+                        criteria_schema_json=_json_object_or_none(_record_get(row, "criteria_schema_json")),
                         is_active=row["is_active"],
                     )
                 except Exception as exc:
@@ -287,7 +296,12 @@ class PostgresWorkRepository:
                     raise
         raise DomainInvariantError("failed to allocate unique assignment public id")
 
-    async def list_assignments(self, *, active_only: bool = True) -> list[AssignmentSnapshot]:
+    async def list_assignments(
+        self,
+        *,
+        active_only: bool = True,
+        include_criteria: bool = False,
+    ) -> list[AssignmentSnapshot]:
         pool = self._pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(SQL_LIST_ASSIGNMENTS, active_only)
@@ -296,6 +310,9 @@ class PostgresWorkRepository:
                 assignment_public_id=row["public_id"],
                 title=row["title"],
                 description=row["description"],
+                criteria_schema_json=(
+                    _json_object_or_none(_record_get(row, "criteria_schema_json")) if include_criteria else None
+                ),
                 is_active=row["is_active"],
             )
             for row in rows
