@@ -66,10 +66,16 @@ class WorkRepository(Protocol):
         *,
         title: str,
         description: str,
+        criteria_schema_json: dict[str, object] | None = None,
         is_active: bool = True,
     ) -> AssignmentSnapshot: ...
 
-    async def list_assignments(self, *, active_only: bool = True) -> list[AssignmentSnapshot]: ...
+    async def list_assignments(
+        self,
+        *,
+        active_only: bool = True,
+        include_criteria: bool = False,
+    ) -> list[AssignmentSnapshot]: ...
 
     async def create_submission_with_source(
         self,

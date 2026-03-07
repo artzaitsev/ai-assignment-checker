@@ -3,6 +3,31 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
+def default_criteria_schema() -> dict[str, object]:
+    return {
+        "schema_version": "task-criteria:v1",
+        "tasks": [
+            {
+                "task_id": "task_main",
+                "title": "Main task",
+                "weight": 1.0,
+                "criteria": [
+                    {
+                        "criterion_id": "correctness",
+                        "description": "Core correctness",
+                        "weight": 0.5,
+                    },
+                    {
+                        "criterion_id": "completeness",
+                        "description": "Coverage of requirements",
+                        "weight": 0.5,
+                    },
+                ],
+            }
+        ],
+    }
+
+
 def seed_candidate_and_assignment(*, client: TestClient) -> tuple[str, str]:
     return seed_candidate_and_assignment_with_source(client=client)
 
@@ -26,7 +51,11 @@ def seed_candidate_and_assignment_with_source(
 
     assignment_response = client.post(
         "/assignments",
-        json={"title": "Seed Assignment", "description": "Seed payload"},
+        json={
+            "title": "Seed Assignment",
+            "description": "Seed payload",
+            "criteria_schema_json": default_criteria_schema(),
+        },
     )
     assert assignment_response.status_code == 200
     assignment_public_id = assignment_response.json()["assignment_public_id"]

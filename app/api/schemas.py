@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.domain.assignment_criteria import validate_assignment_criteria_schema_json
 from app.domain.models import SubmissionStatus
 
 
@@ -57,7 +58,13 @@ class CandidateResponse(BaseModel):
 class CreateAssignmentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=256)
     description: str = Field(min_length=1)
+    criteria_schema_json: dict[str, object]
     is_active: bool = True
+
+    @model_validator(mode="after")
+    def _validate_criteria_schema(self) -> CreateAssignmentRequest:
+        validate_assignment_criteria_schema_json(self.criteria_schema_json)
+        return self
 
 
 class AssignmentResponse(BaseModel):
@@ -65,6 +72,7 @@ class AssignmentResponse(BaseModel):
     title: str
     description: str
     is_active: bool
+    criteria_schema_json: dict[str, object] | None = None
 
 
 class ListAssignmentsResponse(BaseModel):

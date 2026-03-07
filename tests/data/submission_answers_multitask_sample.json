@@ -1,0 +1,20 @@
+{
+  "answers": {
+    "weak": {
+      "task_service_logic": "Implements only a happy path and skips invalid input checks.",
+      "task_architecture_note": "Provides a short overview without discussing trade-offs."
+    },
+    "medium": {
+      "task_service_logic": "Covers baseline logic and some invalid inputs, but misses timeout/retry handling.",
+      "task_architecture_note": "Describes components and mentions one trade-off with limited depth."
+    },
+    "strong": {
+      "task_service_logic": "Implements complete flow, validates input, and includes deterministic retry limits.",
+      "task_architecture_note": "Explains boundaries, scaling limits, and reasons about reliability trade-offs."
+    },
+    "edge": {
+      "task_service_logic": "Minimal implementation with explicit TODOs for error handling and tests.",
+      "task_architecture_note": "Focuses on one constraint and omits alternatives."
+    }
+  }
+}

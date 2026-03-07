@@ -12,11 +12,13 @@ async def create_assignment_handler(
     *,
     title: str,
     description: str,
+    criteria_schema_json: dict[str, object],
     is_active: bool,
 ) -> AssignmentResponse:
     assignment = await deps.repository.create_assignment(
         title=title,
         description=description,
+        criteria_schema_json=criteria_schema_json,
         is_active=is_active,
     )
     return AssignmentResponse(
@@ -24,11 +26,17 @@ async def create_assignment_handler(
         title=assignment.title,
         description=assignment.description,
         is_active=assignment.is_active,
+        criteria_schema_json=assignment.criteria_schema_json,
     )
 
 
-async def list_assignments_handler(deps: ApiDeps, *, active_only: bool) -> ListAssignmentsResponse:
-    items = await deps.repository.list_assignments(active_only=active_only)
+async def list_assignments_handler(
+    deps: ApiDeps,
+    *,
+    active_only: bool,
+    include_criteria: bool,
+) -> ListAssignmentsResponse:
+    items = await deps.repository.list_assignments(active_only=active_only, include_criteria=include_criteria)
     return ListAssignmentsResponse(
         items=[
             AssignmentResponse(
@@ -36,6 +44,7 @@ async def list_assignments_handler(deps: ApiDeps, *, active_only: bool) -> ListA
                 title=item.title,
                 description=item.description,
                 is_active=item.is_active,
+                criteria_schema_json=item.criteria_schema_json if include_criteria else None,
             )
             for item in items
         ]

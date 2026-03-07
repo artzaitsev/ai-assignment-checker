@@ -1,0 +1,24 @@
+{
+  "ranges": {
+    "weak": {
+      "task_service_logic": {"min": 2, "max": 5},
+      "task_architecture_note": {"min": 2, "max": 5},
+      "overall_score_1_10": {"min": 2, "max": 5}
+    },
+    "medium": {
+      "task_service_logic": {"min": 5, "max": 7},
+      "task_architecture_note": {"min": 5, "max": 7},
+      "overall_score_1_10": {"min": 5, "max": 7}
+    },
+    "strong": {
+      "task_service_logic": {"min": 8, "max": 10},
+      "task_architecture_note": {"min": 8, "max": 10},
+      "overall_score_1_10": {"min": 8, "max": 10}
+    },
+    "edge": {
+      "task_service_logic": {"min": 3, "max": 6},
+      "task_architecture_note": {"min": 3, "max": 6},
+      "overall_score_1_10": {"min": 3, "max": 6}
+    }
+  }
+}

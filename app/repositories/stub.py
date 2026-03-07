@@ -35,6 +35,7 @@ class _AssignmentRow:
     assignment_public_id: str
     title: str
     description: str
+    criteria_schema_json: dict[str, object] | None
     is_active: bool
 
 
@@ -137,6 +138,7 @@ class InMemoryWorkRepository:
         *,
         title: str,
         description: str,
+        criteria_schema_json: dict[str, object] | None = None,
         is_active: bool = True,
     ) -> AssignmentSnapshot:
         assignment_public_id = new_assignment_public_id()
@@ -144,6 +146,7 @@ class InMemoryWorkRepository:
             assignment_public_id=assignment_public_id,
             title=title,
             description=description,
+            criteria_schema_json=dict(criteria_schema_json) if isinstance(criteria_schema_json, dict) else None,
             is_active=is_active,
         )
         self.assignments[assignment_public_id] = row
@@ -151,15 +154,26 @@ class InMemoryWorkRepository:
             assignment_public_id=row.assignment_public_id,
             title=row.title,
             description=row.description,
+            criteria_schema_json=dict(row.criteria_schema_json) if isinstance(row.criteria_schema_json, dict) else None,
             is_active=row.is_active,
         )
 
-    async def list_assignments(self, *, active_only: bool = True) -> list[AssignmentSnapshot]:
+    async def list_assignments(
+        self,
+        *,
+        active_only: bool = True,
+        include_criteria: bool = False,
+    ) -> list[AssignmentSnapshot]:
         items = [
             AssignmentSnapshot(
                 assignment_public_id=row.assignment_public_id,
                 title=row.title,
                 description=row.description,
+                criteria_schema_json=(
+                    dict(row.criteria_schema_json)
+                    if include_criteria and isinstance(row.criteria_schema_json, dict)
+                    else None
+                ),
                 is_active=row.is_active,
             )
             for row in self.assignments.values()

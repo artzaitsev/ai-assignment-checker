@@ -66,7 +66,11 @@ def test_skeleton_api_endpoints_are_available() -> None:
             container.repository.persist_evaluation(
                 submission_id=created_submission_id,
                 score_1_10=8,
-                criteria_scores_json={"items": [{"id": "correctness", "score": 8}]},
+                criteria_scores_json={
+                    "items": [{"id": "correctness", "score": 8}],
+                    "task_order": ["task_main"],
+                    "task_scores": {"task_main": 8},
+                },
                 organizer_feedback_json={
                     "strengths": ["Clear structure"],
                     "issues": ["Edge cases"],
@@ -117,6 +121,7 @@ def test_skeleton_api_endpoints_are_available() -> None:
         )
         status_response = client.get(f"/submissions/{created_submission_id}")
         assignments_response = client.get("/assignments")
+        assignments_with_criteria_response = client.get("/assignments", params={"include_criteria": "true"})
         feedback_response = client.get("/feedback", params={"submission_id": "demo"})
         export_response = client.post(
             "/exports",
@@ -133,6 +138,9 @@ def test_skeleton_api_endpoints_are_available() -> None:
     assert status_response.json()["assignment_public_id"] == assignment_public_id
     assert assignments_response.status_code == 200
     assert len(assignments_response.json()["items"]) >= 1
+    assert "criteria_schema_json" not in assignments_response.json()["items"][0]
+    assert assignments_with_criteria_response.status_code == 200
+    assert assignments_with_criteria_response.json()["items"][0]["criteria_schema_json"]["schema_version"] == "task-criteria:v1"
     assert feedback_response.status_code == 200
     assert feedback_response.json()["items"] == []
     assert export_response.status_code == 200
@@ -142,6 +150,51 @@ def test_skeleton_api_endpoints_are_available() -> None:
     assert export_payload["export_ref"].startswith("s3://exports/")
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("text/csv")
+    csv_payload = download_response.content.decode("utf-8")
+    assert "task_scores_summary" in csv_payload.splitlines()[0]
+    assert "task_main:8" in csv_payload
+
+
+@pytest.mark.integration
+def test_create_assignment_requires_criteria_schema_json() -> None:
+    role = validate_role("api")
+    container = build_runtime_container(role)
+    app = build_app(
+        role=role.name,
+        run_id="integration-api-assignment-validation",
+        worker_loop=container.worker_loop,
+        api_deps=container.api_deps,
+    )
+
+    with TestClient(app) as client:
+        missing_schema_response = client.post(
+            "/assignments",
+            json={"title": "No schema", "description": "missing"},
+        )
+        valid_response = client.post(
+            "/assignments",
+            json={
+                "title": "With schema",
+                "description": "valid",
+                "criteria_schema_json": {
+                    "schema_version": "task-criteria:v1",
+                    "tasks": [
+                        {
+                            "task_id": "task_1",
+                            "title": "Task",
+                            "weight": 1.0,
+                            "criteria": [
+                                {"criterion_id": "correctness", "description": "d", "weight": 1.0},
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+
+    assert missing_schema_response.status_code == 422
+    assert valid_response.status_code == 200
+    assert valid_response.json()["criteria_schema_json"]["schema_version"] == "task-criteria:v1"
 
 
 @pytest.mark.integration

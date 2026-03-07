@@ -50,6 +50,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
                 normalized_artifact=normalized_artifact,
                 assignment_title=assignment.title,
                 assignment_description=assignment.description,
+                criteria_schema_json=assignment.criteria_schema_json,
                 chain_spec=chain_spec,
             ),
             llm=deps.llm,
@@ -128,7 +129,7 @@ async def _resolve_assignment(
     if submission is not None and submission.assignment_public_id not in assignment_candidates:
         assignment_candidates.append(submission.assignment_public_id)
 
-    assignments = await deps.repository.list_assignments(active_only=False)
+    assignments = await deps.repository.list_assignments(active_only=False, include_criteria=True)
     for candidate_id in assignment_candidates:
         for item in assignments:
             if item.assignment_public_id == candidate_id:

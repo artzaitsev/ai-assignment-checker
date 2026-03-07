@@ -76,6 +76,7 @@ class AssignmentSnapshot:
     title: str
     description: str
     is_active: bool
+    criteria_schema_json: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

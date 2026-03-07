@@ -53,6 +53,7 @@ class EvaluateSubmissionCommand:
     normalized_artifact: NormalizedArtifact
     assignment_title: str
     assignment_description: str
+    criteria_schema_json: dict[str, object] | None
     chain_spec: EvaluationChainSpec
 
 

@@ -359,6 +359,7 @@ def build_app(
     @app.post(
         "/assignments",
         response_model=AssignmentResponse,
+        response_model_exclude_none=True,
         responses={400: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
         tags=["Assignments"],
     )
@@ -369,14 +370,22 @@ def build_app(
             api_deps,
             title=request.title,
             description=request.description,
+            criteria_schema_json=request.criteria_schema_json,
             is_active=request.is_active,
         )
 
-    @app.get("/assignments", response_model=ListAssignmentsResponse, tags=["Assignments"])
-    async def list_assignments(active_only: bool = Query(default=True)) -> ListAssignmentsResponse:
+    @app.get("/assignments", response_model=ListAssignmentsResponse, response_model_exclude_none=True, tags=["Assignments"])
+    async def list_assignments(
+        active_only: bool = Query(default=True),
+        include_criteria: bool = Query(default=False),
+    ) -> ListAssignmentsResponse:
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
-        return await list_assignments_handler(api_deps, active_only=active_only)
+        return await list_assignments_handler(
+            api_deps,
+            active_only=active_only,
+            include_criteria=include_criteria,
+        )
 
     @app.get("/feedback", response_model=FeedbackListResponse, tags=["Submissions"])
     async def list_feedback(submission_id: str | None = Query(default=None)) -> FeedbackListResponse:
