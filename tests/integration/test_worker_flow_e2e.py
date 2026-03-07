@@ -82,6 +82,7 @@ def test_worker_loops_cover_full_backend_flow() -> None:
         assert telegram.sent_texts
         assert telegram.sent_texts[0][0] == "chat-flow-e2e"
         assert repository.llm_runs
+        assert repository.llm_runs[0]["api_base"] == llm.base_url
         assert repository.evaluations
 
     asyncio.run(_run())

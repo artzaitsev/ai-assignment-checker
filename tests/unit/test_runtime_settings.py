@@ -192,8 +192,13 @@ def test_process_env_overrides_dotenv_values(
 def test_dry_run_real_mode_reports_missing_s3_config_for_normalize_worker(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     _clear_runtime_env(monkeypatch)
+    monkeypatch.setattr("app.main.load_dotenv", lambda override=False: False)
+    workdir = tmp_path / "dotenv-missing-s3"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
     monkeypatch.setenv("INTEGRATION_MODE", "real")
     monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "strict")
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
