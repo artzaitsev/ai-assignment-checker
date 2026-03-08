@@ -38,7 +38,7 @@
 - `track.telegram-entry`: контракты signed-link токена Telegram и onboarding entry
   - Основные файлы: `app/domain/use_cases/telegram_entry_links.py`, `app/workers/handlers/ingest_telegram.py`, `app/services/runtime_settings.py`
 - `track.evaluation`: контракт normalized, выполнение chain-spec, evaluate use-case, scoring/reproducibility
-  - Основные файлы: `app/domain/evaluation_chain.py`, `app/domain/scoring.py`, `app/domain/use_cases/llm_eval.py`, `app/workers/handlers/evaluate.py`
+  - Основные файлы: `app/domain/evaluation_chain.py`, `app/domain/evaluation_contracts.py`, `app/domain/scoring.py`, `app/domain/use_cases/llm_eval.py`, `app/workers/handlers/evaluate.py`
 - `track.delivery-export`: контракты feedback/export и формирование delivery stage
   - Основные файлы: `app/domain/use_cases/deliver.py`, `app/workers/handlers/deliver.py`, `app/api/handlers/exports.py`
 - `track.quality`: acceptance checks и ответственность за test matrix

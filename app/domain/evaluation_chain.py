@@ -11,13 +11,6 @@ import yaml
 
 
 @dataclass(frozen=True)
-class RubricCriterion:
-    id: str
-    description: str
-    weight: float
-
-
-@dataclass(frozen=True)
 class AIAssistancePolicy:
     enabled: bool
     affects_score: bool
@@ -28,7 +21,6 @@ class AIAssistancePolicy:
 class RuntimeConfig:
     temperature: float
     seed: int | None
-    response_language: str
 
 
 @dataclass(frozen=True)
@@ -39,7 +31,6 @@ class PromptsConfig:
 
 @dataclass(frozen=True)
 class RubricConfig:
-    criteria: tuple[RubricCriterion, ...]
     ai_assistance_policy: AIAssistancePolicy
 
 
@@ -47,14 +38,12 @@ class RubricConfig:
 class EvaluationChainSpec:
     spec_version: str
     chain_version: str
-    model: str
     runtime: RuntimeConfig
     rubric: RubricConfig
     prompts: PromptsConfig
     llm_response: dict[str, object]
 
 
-ISO_LANGUAGE_RE = re.compile(r"^[a-z]{2}(?:-[A-Z]{2})?$")
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}")
 
 
@@ -68,32 +57,14 @@ def load_chain_spec(*, file_path: str | Path) -> EvaluationChainSpec:
 def parse_chain_spec(data: dict[str, object]) -> EvaluationChainSpec:
     spec_version = _required_str(data, "spec_version")
     chain_version = _required_str(data, "chain_version")
-    model = _required_str(data, "model")
 
     runtime_raw = _required_obj(data, "runtime")
     runtime = RuntimeConfig(
         temperature=_required_float(runtime_raw, "temperature"),
         seed=_optional_int(runtime_raw, "seed"),
-        response_language=_required_str(runtime_raw, "response_language"),
     )
-    if not ISO_LANGUAGE_RE.match(runtime.response_language):
-        raise ValueError("runtime.response_language must be ISO code, e.g. 'ru' or 'en'")
 
     rubric_raw = _required_obj(data, "rubric")
-    criteria_raw = _required_list(rubric_raw, "criteria")
-    if not criteria_raw:
-        raise ValueError("rubric.criteria must contain at least one criterion")
-    criteria = tuple(
-        RubricCriterion(
-            id=_required_str(item, "id"),
-            description=_required_str(item, "description"),
-            weight=_required_float(item, "weight"),
-        )
-        for item in _objects(criteria_raw, "rubric.criteria")
-    )
-    if sum(item.weight for item in criteria) <= 0:
-        raise ValueError("rubric.criteria total weight must be > 0")
-
     ai_policy_raw = _required_obj(rubric_raw, "ai_assistance_policy")
     ai_policy = AIAssistancePolicy(
         enabled=_required_bool(ai_policy_raw, "enabled"),
@@ -114,9 +85,8 @@ def parse_chain_spec(data: dict[str, object]) -> EvaluationChainSpec:
     return EvaluationChainSpec(
         spec_version=spec_version,
         chain_version=chain_version,
-        model=model,
         runtime=runtime,
-        rubric=RubricConfig(criteria=criteria, ai_assistance_policy=ai_policy),
+        rubric=RubricConfig(ai_assistance_policy=ai_policy),
         prompts=prompts,
         llm_response=llm_response,
     )
@@ -147,17 +117,11 @@ def resolved_chain_spec_payload(*, spec: EvaluationChainSpec) -> dict[str, objec
     return {
         "spec_version": spec.spec_version,
         "chain_version": spec.chain_version,
-        "model": spec.model,
         "runtime": {
             "temperature": spec.runtime.temperature,
             "seed": spec.runtime.seed,
-            "response_language": spec.runtime.response_language,
         },
         "rubric": {
-            "criteria": [
-                {"id": item.id, "description": item.description, "weight": item.weight}
-                for item in spec.rubric.criteria
-            ],
             "ai_assistance_policy": {
                 "enabled": spec.rubric.ai_assistance_policy.enabled,
                 "affects_score": spec.rubric.ai_assistance_policy.affects_score,
@@ -280,7 +244,6 @@ def _spec_to_mapping(spec: EvaluationChainSpec) -> dict[str, object]:
     return {
         "spec_version": payload["spec_version"],
         "chain_version": payload["chain_version"],
-        "model": payload["model"],
         "runtime": payload["runtime"],
         "rubric": payload["rubric"],
     }
@@ -348,11 +311,3 @@ def _required_str_list(data: dict[str, object], key: str) -> list[str]:
         result.append(value)
     return result
 
-
-def _objects(items: list[object], field_name: str) -> list[dict[str, object]]:
-    result: list[dict[str, object]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise ValueError(f"{field_name} must contain objects")
-        result.append(item)
-    return result

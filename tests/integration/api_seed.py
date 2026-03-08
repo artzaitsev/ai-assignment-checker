@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
-def default_criteria_schema() -> dict[str, object]:
+def default_task_schema() -> dict[str, object]:
     return {
         "schema_version": "task-criteria:v1",
         "tasks": [
@@ -54,7 +54,8 @@ def seed_candidate_and_assignment_with_source(
         json={
             "title": "Seed Assignment",
             "description": "Seed payload",
-            "criteria_schema_json": default_criteria_schema(),
+            "language": "en",
+            "task_schema": default_task_schema(),
         },
     )
     assert assignment_response.status_code == 200

@@ -89,6 +89,8 @@
 - `POST /candidates`
 - `POST /assignments`
 - `GET /assignments`
+- `POST /assignments` требует `language` и `task_schema`
+- `GET /assignments` всегда возвращает `language`, а `task_schema` отдает только при `include_task_schema=true`
 - `POST /submissions`
 - `GET /submissions/{submission_id}`
 - `POST /submissions/file` (synthetic infra check)
@@ -118,7 +120,7 @@
 - `process(claim)`
   - Выполняет stage-specific поведение (Telegram entry routing, normalize/evaluate/deliver и т.д.).
   - Возвращает `ProcessResult` с флагом успеха, detail и optional artifact metadata.
-  - Стадия evaluate резолвит chain spec из `app/eval/chains/chain.v1.yaml` и использует domain chain execution (`app/domain/evaluation_chain.py`).
+  - Стадия evaluate резолвит chain spec из `app/eval/chains/chain.v1.yaml`, использует assignment-owned `task_schema` как единственный scoring contract, берет эффективную модель из runtime settings и берет язык ответа из `assignments.language`.
 
 - `link_artifact(...)` (опционально)
   - Сохраняет ссылку/версию артефакта, если стадия сгенерировала выход.
@@ -252,6 +254,8 @@ If claim_next returns None -> return did_work=False (idle/backoff path in runner
 2. Загрузите файл через `POST /submissions/file`.
 3. Запустите synthetic chain через `POST /internal/test/run-pipeline`.
 4. Проверьте финальное состояние/trace через `GET /submissions/{submission_id}`.
+
+При локальной проверке assignment должен содержать валидные `language` и `task_schema`; legacy null-schema режим больше не поддерживается.
 
 Минимальный пример вызова pipeline:
 

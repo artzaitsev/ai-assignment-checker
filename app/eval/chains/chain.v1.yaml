@@ -1,26 +1,11 @@
 spec_version: chain-spec:v1
 chain_version: chain:v1
-model: model:v1
 
 runtime:
   temperature: 0.1
   seed: 42
-  response_language: ru
 
 rubric:
-  criteria:
-    - id: correctness
-      description: Корректность решения и логики.
-      weight: 0.35
-    - id: completeness
-      description: Полнота покрытия требований задания.
-      weight: 0.25
-    - id: code_quality
-      description: Качество кода, читаемость и структура.
-      weight: 0.20
-    - id: edge_cases
-      description: Обработка граничных и ошибочных случаев.
-      weight: 0.20
   ai_assistance_policy:
     enabled: true
     affects_score: false
@@ -33,7 +18,7 @@ prompts:
   system: |
     Вы выступаете в роли проверяющего. Возвращайте стро JSON.
   user_template: |
-    Язык ответа: {{runtime.response_language}}
+    Язык ответа: {{assignment.language}}
 
     Название задания:
     {{assignment.title}}
@@ -44,8 +29,8 @@ prompts:
     Содержимое работы:
     {{normalized.content_markdown}}
 
-    Rubric criteria:
-    {{rubric.criteria}}
+    Task schema:
+    {{assignment.task_schema}}
 
     AI assistance policy:
     {{rubric.ai_assistance_policy}}
@@ -53,20 +38,27 @@ prompts:
 llm_response:
   type: json
   required:
-    - criteria
+    - tasks
     - organizer_feedback
     - candidate_feedback
     - ai_assistance
   properties:
-    criteria:
+    tasks:
       type: array
       items:
         type: object
-        required: [id, score, reason]
+        required: [task_id, criteria]
         properties:
-          id: { type: string }
-          score: { type: integer, minimum: 1, maximum: 10 }
-          reason: { type: string }
+          task_id: { type: string }
+          criteria:
+            type: array
+            items:
+              type: object
+              required: [criterion_id, score, reason]
+              properties:
+                criterion_id: { type: string }
+                score: { type: integer, minimum: 1, maximum: 10 }
+                reason: { type: string }
     organizer_feedback:
       type: object
       required: [strengths, issues, recommendations]

@@ -4,9 +4,28 @@ import asyncio
 
 import pytest
 
+from app.domain.evaluation_contracts import parse_task_schema
 from app.domain.errors import DomainInvariantError
 from app.domain.lifecycle import ALLOWED_TRANSITIONS
 from app.repositories.stub import InMemoryWorkRepository
+
+
+def _task_schema():
+    return parse_task_schema(
+        {
+            "schema_version": "task-criteria:v1",
+            "tasks": [
+                {
+                    "task_id": "task_main",
+                    "title": "Main task",
+                    "weight": 1.0,
+                    "criteria": [
+                        {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                    ],
+                }
+            ],
+        }
+    )
 
 
 @pytest.mark.unit
@@ -27,7 +46,12 @@ def test_retry_counter_and_error_code_persisted_on_failure() -> None:
 
     async def _run() -> None:
         candidate = await repo.create_candidate(first_name="Unit", last_name="Candidate")
-        assignment = await repo.create_assignment(title="Assignment", description="Unit")
+        assignment = await repo.create_assignment(
+            title="Assignment",
+            description="Unit",
+            language="en",
+            task_schema=_task_schema(),
+        )
         created = await repo.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,

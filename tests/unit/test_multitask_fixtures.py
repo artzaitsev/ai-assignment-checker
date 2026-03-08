@@ -15,7 +15,7 @@ def test_multitask_fixture_files_exist_and_have_expected_shape() -> None:
     answers = json.loads((DATA_DIR / "submission_answers_multitask_sample.json").read_text(encoding="utf-8"))
     ranges = json.loads((DATA_DIR / "expected_scoring_ranges_multitask.json").read_text(encoding="utf-8"))
 
-    schema = assignment["assignment"]["criteria_schema_json"]
+    schema = assignment["assignment"]["task_schema"]
     assert schema["schema_version"] == "task-criteria:v1"
     tasks = schema["tasks"]
     assert isinstance(tasks, list) and len(tasks) >= 2

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskSchema
 from app.domain.error_taxonomy import ErrorCode, RetryClassification
 
 
@@ -75,8 +76,9 @@ class AssignmentSnapshot:
     assignment_public_id: str
     title: str
     description: str
+    language: str
     is_active: bool
-    criteria_schema_json: dict[str, object] | None = None
+    task_schema: TaskSchema | None = None
 
 
 @dataclass(frozen=True)
@@ -199,9 +201,9 @@ class SubmissionListItem:
     @dataclass(frozen=True)
     class Evaluation:
         score_1_10: int | None
-        criteria_scores_json: dict[str, object] | None
-        organizer_feedback_json: dict[str, object] | None
-        candidate_feedback_json: dict[str, object] | None
+        score_breakdown: ScoreBreakdown | None
+        organizer_feedback: OrganizerFeedback | None
+        candidate_feedback: CandidateFeedback | None
         chain_version: str | None
         model: str | None
         spec_version: str | None

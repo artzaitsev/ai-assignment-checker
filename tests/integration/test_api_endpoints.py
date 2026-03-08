@@ -5,6 +5,7 @@ import pytest
 
 from app.api.http_app import build_app
 from app.clients.stub import StubTelegramClient
+from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskScoreBreakdown, CriterionScore
 from app.domain.models import CandidateSourceType, TelegramInboundEvent, TelegramLinkSettings, WorkItemClaim
 from app.domain.use_cases.telegram_entry_links import sign_entry_token
 from app.workers.handlers import ingest_telegram
@@ -66,21 +67,35 @@ def test_skeleton_api_endpoints_are_available() -> None:
             container.repository.persist_evaluation(
                 submission_id=created_submission_id,
                 score_1_10=8,
-                criteria_scores_json={
-                    "items": [{"id": "correctness", "score": 8}],
-                    "task_order": ["task_main"],
-                    "task_scores": {"task_main": 8},
-                },
-                organizer_feedback_json={
-                    "strengths": ["Clear structure"],
-                    "issues": ["Edge cases"],
-                    "recommendations": ["Add coverage"],
-                },
-                candidate_feedback_json={
-                    "summary": "Good baseline",
-                    "what_went_well": ["Core logic"],
-                    "what_to_improve": ["Edge handling"],
-                },
+                score_breakdown=ScoreBreakdown(
+                    schema_version="task-criteria:v1",
+                    tasks=(
+                        TaskScoreBreakdown(
+                            task_id="task_main",
+                            score_1_10=8,
+                            weight=1.0,
+                            criteria=(
+                                CriterionScore(
+                                    criterion_id="correctness",
+                                    score=8,
+                                    reason="good",
+                                    weight=1.0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    overall_score_1_10_derived=8,
+                ),
+                organizer_feedback=OrganizerFeedback(
+                    strengths=("Clear structure",),
+                    issues=("Edge cases",),
+                    recommendations=("Add coverage",),
+                ),
+                candidate_feedback=CandidateFeedback(
+                    summary="Good baseline",
+                    what_went_well=("Core logic",),
+                    what_to_improve=("Edge handling",),
+                ),
                 ai_assistance_likelihood=0.35,
                 ai_assistance_confidence=0.55,
                 reproducibility_subset={
@@ -121,7 +136,7 @@ def test_skeleton_api_endpoints_are_available() -> None:
         )
         status_response = client.get(f"/submissions/{created_submission_id}")
         assignments_response = client.get("/assignments")
-        assignments_with_criteria_response = client.get("/assignments", params={"include_criteria": "true"})
+        assignments_with_task_schema_response = client.get("/assignments", params={"include_task_schema": "true"})
         feedback_response = client.get("/feedback", params={"submission_id": "demo"})
         export_response = client.post(
             "/exports",
@@ -138,9 +153,10 @@ def test_skeleton_api_endpoints_are_available() -> None:
     assert status_response.json()["assignment_public_id"] == assignment_public_id
     assert assignments_response.status_code == 200
     assert len(assignments_response.json()["items"]) >= 1
-    assert "criteria_schema_json" not in assignments_response.json()["items"][0]
-    assert assignments_with_criteria_response.status_code == 200
-    assert assignments_with_criteria_response.json()["items"][0]["criteria_schema_json"]["schema_version"] == "task-criteria:v1"
+    assert assignments_response.json()["items"][0]["language"] == "en"
+    assert "task_schema" not in assignments_response.json()["items"][0]
+    assert assignments_with_task_schema_response.status_code == 200
+    assert assignments_with_task_schema_response.json()["items"][0]["task_schema"]["schema_version"] == "task-criteria:v1"
     assert feedback_response.status_code == 200
     assert feedback_response.json()["items"] == []
     assert export_response.status_code == 200
@@ -156,7 +172,7 @@ def test_skeleton_api_endpoints_are_available() -> None:
 
 
 @pytest.mark.integration
-def test_create_assignment_requires_criteria_schema_json() -> None:
+def test_create_assignment_requires_task_schema_and_language() -> None:
     role = validate_role("api")
     container = build_runtime_container(role)
     app = build_app(
@@ -169,14 +185,15 @@ def test_create_assignment_requires_criteria_schema_json() -> None:
     with TestClient(app) as client:
         missing_schema_response = client.post(
             "/assignments",
-            json={"title": "No schema", "description": "missing"},
+            json={"title": "No schema", "description": "missing", "language": "en"},
         )
         valid_response = client.post(
             "/assignments",
             json={
                 "title": "With schema",
                 "description": "valid",
-                "criteria_schema_json": {
+                "language": "en",
+                "task_schema": {
                     "schema_version": "task-criteria:v1",
                     "tasks": [
                         {
@@ -194,7 +211,7 @@ def test_create_assignment_requires_criteria_schema_json() -> None:
 
     assert missing_schema_response.status_code == 422
     assert valid_response.status_code == 200
-    assert valid_response.json()["criteria_schema_json"]["schema_version"] == "task-criteria:v1"
+    assert valid_response.json()["task_schema"]["schema_version"] == "task-criteria:v1"
 
 
 @pytest.mark.integration

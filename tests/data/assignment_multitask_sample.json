@@ -2,7 +2,7 @@
   "assignment": {
     "title": "Synthetic Backend Screening",
     "description": "Evaluate a compact service implementation and brief architecture note.",
-    "criteria_schema_json": {
+    "task_schema": {
       "schema_version": "task-criteria:v1",
       "tasks": [
         {

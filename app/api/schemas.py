@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.domain.assignment_criteria import validate_assignment_criteria_schema_json
+from app.domain.evaluation_contracts import (
+    TaskSchema,
+    TaskSchemaCriterion,
+    TaskSchemaTask,
+    parse_task_schema,
+    validate_language_code,
+)
 from app.domain.models import SubmissionStatus
 
 
@@ -55,24 +61,95 @@ class CandidateResponse(BaseModel):
     last_name: str
 
 
+class TaskSchemaCriterionPayload(BaseModel):
+    criterion_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    weight: float = Field(gt=0)
+
+    def to_domain(self) -> TaskSchemaCriterion:
+        return TaskSchemaCriterion(
+            criterion_id=self.criterion_id,
+            description=self.description,
+            weight=self.weight,
+        )
+
+    @classmethod
+    def from_domain(cls, criterion: TaskSchemaCriterion) -> TaskSchemaCriterionPayload:
+        return cls(
+            criterion_id=criterion.criterion_id,
+            description=criterion.description,
+            weight=criterion.weight,
+        )
+
+
+class TaskSchemaTaskPayload(BaseModel):
+    task_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    weight: float = Field(gt=0)
+    criteria: list[TaskSchemaCriterionPayload]
+
+    def to_domain(self) -> TaskSchemaTask:
+        return TaskSchemaTask(
+            task_id=self.task_id,
+            title=self.title,
+            weight=self.weight,
+            criteria=tuple(criterion.to_domain() for criterion in self.criteria),
+        )
+
+    @classmethod
+    def from_domain(cls, task: TaskSchemaTask) -> TaskSchemaTaskPayload:
+        return cls(
+            task_id=task.task_id,
+            title=task.title,
+            weight=task.weight,
+            criteria=[TaskSchemaCriterionPayload.from_domain(criterion) for criterion in task.criteria],
+        )
+
+
+class TaskSchemaPayload(BaseModel):
+    schema_version: str = Field(min_length=1)
+    tasks: list[TaskSchemaTaskPayload]
+
+    @model_validator(mode="after")
+    def _validate_structure(self) -> TaskSchemaPayload:
+        parse_task_schema(self.model_dump())
+        return self
+
+    def to_domain(self) -> TaskSchema:
+        return TaskSchema(
+            schema_version=self.schema_version,
+            tasks=tuple(task.to_domain() for task in self.tasks),
+        )
+
+    @classmethod
+    def from_domain(cls, task_schema: TaskSchema) -> TaskSchemaPayload:
+        return cls(
+            schema_version=task_schema.schema_version,
+            tasks=[TaskSchemaTaskPayload.from_domain(task) for task in task_schema.tasks],
+        )
+
+
 class CreateAssignmentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=256)
     description: str = Field(min_length=1)
-    criteria_schema_json: dict[str, object]
+    language: str = Field(min_length=2, max_length=8)
+    task_schema: TaskSchemaPayload
     is_active: bool = True
 
-    @model_validator(mode="after")
-    def _validate_criteria_schema(self) -> CreateAssignmentRequest:
-        validate_assignment_criteria_schema_json(self.criteria_schema_json)
-        return self
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, value: str) -> str:
+        validate_language_code(value)
+        return value
 
 
 class AssignmentResponse(BaseModel):
     assignment_public_id: str = Field(pattern=ASSIGNMENT_ID_PATTERN)
     title: str
     description: str
+    language: str
     is_active: bool
-    criteria_schema_json: dict[str, object] | None = None
+    task_schema: TaskSchemaPayload | None = None
 
 
 class ListAssignmentsResponse(BaseModel):

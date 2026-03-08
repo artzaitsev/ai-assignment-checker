@@ -57,11 +57,16 @@ def build_runtime_container(role: RuntimeRole, *, integration_mode: str | None =
 
             async def _on_startup() -> None:
                 await pool_manager.startup()
+                await repository.ensure_no_null_task_schema_rows()
                 await pool_manager.acquire_singleton_lock(lock_key=TELEGRAM_INGEST_SINGLETON_LOCK_KEY)
 
             on_startup = _on_startup
         else:
-            on_startup = pool_manager.startup
+            async def _on_startup() -> None:
+                await pool_manager.startup()
+                await repository.ensure_no_null_task_schema_rows()
+
+            on_startup = _on_startup
         on_shutdown = pool_manager.shutdown
     else:
         repository = InMemoryWorkRepository()

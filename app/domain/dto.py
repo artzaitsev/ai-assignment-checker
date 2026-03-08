@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.evaluation_contracts import (
+    CandidateFeedback,
+    OrganizerFeedback,
+    ScoreBreakdown,
+    TaskSchema,
+)
 from app.domain.evaluation_chain import EvaluationChainSpec
 from app.domain.models import SubmissionListItem
 from app.lib.artifacts.types import ExportRowArtifact, NormalizedArtifact
@@ -53,8 +59,10 @@ class EvaluateSubmissionCommand:
     normalized_artifact: NormalizedArtifact
     assignment_title: str
     assignment_description: str
-    criteria_schema_json: dict[str, object] | None
+    assignment_language: str
+    task_schema: TaskSchema
     chain_spec: EvaluationChainSpec
+    effective_model: str
 
 
 @dataclass(frozen=True)
@@ -87,9 +95,9 @@ class EvaluateSubmissionResult:
     tokens_output: int
     latency_ms: int
     score_1_10: int
-    criteria_scores_json: dict[str, object]
-    organizer_feedback_json: dict[str, object]
-    candidate_feedback_json: dict[str, object]
+    score_breakdown: ScoreBreakdown
+    organizer_feedback: OrganizerFeedback
+    candidate_feedback: CandidateFeedback
     ai_assistance_likelihood: float
     ai_assistance_confidence: float
     reproducibility_subset: dict[str, str]

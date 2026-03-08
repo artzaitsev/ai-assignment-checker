@@ -59,17 +59,15 @@ class StubTelegramClient:
 @dataclass
 class StubLLMClient:
     base_url: str = "https://stub-llm.invalid"
+    model: str = "stub-model:v1"
     calls: list[LLMClientRequest] = field(default_factory=list)
 
     def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
         self.calls.append(request)
+        task_schema = _extract_task_schema_from_prompt(request.user_prompt)
+        tasks = _default_task_scores(task_schema)
         default_json: dict[str, object] = {
-            "criteria": [
-                {"id": "correctness", "score": 8, "reason": "Core logic is mostly correct"},
-                {"id": "completeness", "score": 7, "reason": "Most requirements are covered"},
-                {"id": "code_quality", "score": 8, "reason": "Readable structure"},
-                {"id": "edge_cases", "score": 7, "reason": "Basic edge cases addressed"},
-            ],
+            "tasks": tasks,
             "organizer_feedback": {
                 "strengths": ["Clear structure", "Reasonable decomposition"],
                 "issues": ["Edge-case handling can be expanded"],
@@ -93,3 +91,76 @@ class StubLLMClient:
             tokens_output=256,
             latency_ms=120,
         )
+
+
+def _extract_task_schema_from_prompt(prompt: str) -> dict[str, object] | None:
+    marker = '"task_schema":'
+    marker_index = prompt.find(marker)
+    if marker_index == -1:
+        return None
+    start = prompt.find("{", marker_index)
+    if start == -1:
+        return None
+    depth = 0
+    for index in range(start, len(prompt)):
+        char = prompt[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                import json
+
+                snippet = prompt[start : index + 1]
+                try:
+                    payload = json.loads(snippet)
+                except json.JSONDecodeError:
+                    return None
+                return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _default_task_scores(task_schema: dict[str, object] | None) -> list[dict[str, object]]:
+    tasks_raw = task_schema.get("tasks") if isinstance(task_schema, dict) else None
+    if not isinstance(tasks_raw, list) or not tasks_raw:
+        return [
+            {
+                "task_id": "task_main",
+                "criteria": [
+                    {"criterion_id": "correctness", "score": 8, "reason": "Core logic is mostly correct"},
+                ],
+            }
+        ]
+
+    tasks: list[dict[str, object]] = []
+    for task in tasks_raw:
+        if not isinstance(task, dict):
+            continue
+        task_id = task.get("task_id")
+        criteria_raw = task.get("criteria")
+        if not isinstance(task_id, str) or not isinstance(criteria_raw, list):
+            continue
+        criteria: list[dict[str, object]] = []
+        for index, criterion in enumerate(criteria_raw):
+            if not isinstance(criterion, dict):
+                continue
+            criterion_id = criterion.get("criterion_id")
+            if not isinstance(criterion_id, str):
+                continue
+            criteria.append(
+                {
+                    "criterion_id": criterion_id,
+                    "score": 8 if index == 0 else 7,
+                    "reason": f"Synthetic review for {criterion_id}",
+                }
+            )
+        if criteria:
+            tasks.append({"task_id": task_id, "criteria": criteria})
+    return tasks or [
+        {
+            "task_id": "task_main",
+            "criteria": [
+                {"criterion_id": "correctness", "score": 8, "reason": "Core logic is mostly correct"},
+            ],
+        }
+    ]

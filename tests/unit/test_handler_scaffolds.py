@@ -7,6 +7,7 @@ from app.api.handlers.deps import ApiDeps
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
+from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskScoreBreakdown, CriterionScore, parse_task_schema
 from app.lib.artifacts import build_artifact_repository
 from app.lib.artifacts.types import NormalizedArtifact
 from app.domain.models import (
@@ -20,6 +21,47 @@ from app.domain.models import (
 from app.repositories.stub import InMemoryWorkRepository
 from app.workers.handlers import deliver, evaluate, ingest_telegram, normalize
 from app.workers.handlers.deps import WorkerDeps
+
+
+def _task_schema():
+    return parse_task_schema(
+        {
+            "schema_version": "task-criteria:v1",
+            "tasks": [
+                {
+                    "task_id": "task_main",
+                    "title": "Main task",
+                    "weight": 1.0,
+                    "criteria": [
+                        {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def _score_breakdown(*, chain_snapshot: dict[str, object] | None = None):
+    return ScoreBreakdown(
+        schema_version="task-criteria:v1",
+        tasks=(
+            TaskScoreBreakdown(
+                task_id="task_main",
+                score_1_10=8,
+                weight=1.0,
+                criteria=(
+                    CriterionScore(
+                        criterion_id="correctness",
+                        score=8,
+                        reason="ok",
+                        weight=1.0,
+                    ),
+                ),
+            ),
+        ),
+        overall_score_1_10_derived=8,
+        chain_snapshot=chain_snapshot,
+    )
 
 
 @pytest.mark.unit
@@ -292,7 +334,12 @@ def test_handlers_execute_skeleton_flow() -> None:
             first_name="A",
             last_name="B",
         )
-        assignment = await repository.create_assignment(title="Title", description="Desc")
+        assignment = await repository.create_assignment(
+            title="Title",
+            description="Desc",
+            language="en",
+            task_schema=_task_schema(),
+        )
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -340,9 +387,9 @@ def test_handlers_execute_skeleton_flow() -> None:
         assert isinstance(repro, dict)
         assert repro["chain_version"] == "chain:v1"
         assert repro["spec_version"] == "chain-spec:v1"
-        criteria_payload = repository.evaluations[0]["criteria_scores_json"]
-        assert isinstance(criteria_payload, dict)
-        snapshot = criteria_payload["_chain_snapshot"]
+        score_payload = repository.evaluations[0]["score_breakdown"]
+        assert isinstance(score_payload, dict)
+        snapshot = score_payload["_chain_snapshot"]
         assert isinstance(snapshot, dict)
         assert isinstance(snapshot.get("chain_digest"), str)
         assert snapshot.get("mismatch_policy") == "warn-only"
@@ -359,7 +406,7 @@ def test_export_handler_uses_storage_contract() -> None:
 
     async def _run() -> None:
         candidate = await repository.create_candidate(first_name="A", last_name="B")
-        assignment = await repository.create_assignment(title="T", description="D")
+        assignment = await repository.create_assignment(title="T", description="D", language="en", task_schema=_task_schema())
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -384,9 +431,9 @@ def test_export_handler_uses_storage_contract() -> None:
         await repository.persist_evaluation(
             submission_id=created.submission_id,
             score_1_10=8,
-            criteria_scores_json={"items": [{"name": "correctness", "score": 8}]},
-            organizer_feedback_json={"strengths": ["s"], "issues": ["i"], "recommendations": ["r"]},
-            candidate_feedback_json={"summary": "ok", "what_went_well": ["w"], "what_to_improve": ["m"]},
+            score_breakdown=_score_breakdown(),
+            organizer_feedback=OrganizerFeedback(strengths=("s",), issues=("i",), recommendations=("r",)),
+            candidate_feedback=CandidateFeedback(summary="ok", what_went_well=("w",), what_to_improve=("m",)),
             ai_assistance_likelihood=0.35,
             ai_assistance_confidence=0.55,
             reproducibility_subset={
@@ -440,7 +487,7 @@ def test_deliver_handler_requires_telegram_chat_mapping() -> None:
 
     async def _run() -> None:
         candidate = await repository.create_candidate(first_name="Del", last_name="Iv")
-        assignment = await repository.create_assignment(title="D", description="D")
+        assignment = await repository.create_assignment(title="D", description="D", language="en", task_schema=_task_schema())
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -451,9 +498,9 @@ def test_deliver_handler_requires_telegram_chat_mapping() -> None:
         await repository.persist_evaluation(
             submission_id=created.submission_id,
             score_1_10=8,
-            criteria_scores_json={},
-            organizer_feedback_json={},
-            candidate_feedback_json={"summary": "ok"},
+            score_breakdown=_score_breakdown(),
+            organizer_feedback=OrganizerFeedback(strengths=(), issues=(), recommendations=()),
+            candidate_feedback=CandidateFeedback(summary="ok", what_went_well=(), what_to_improve=()),
             ai_assistance_likelihood=0.1,
             ai_assistance_confidence=0.1,
             reproducibility_subset={
@@ -621,7 +668,12 @@ def test_evaluate_handler_warns_on_chain_digest_mismatch_and_continues(caplog: p
 
     async def _run() -> None:
         candidate = await repository.create_candidate(first_name="A", last_name="B")
-        assignment = await repository.create_assignment(title="Title", description="Desc")
+        assignment = await repository.create_assignment(
+            title="Title",
+            description="Desc",
+            language="en",
+            task_schema=_task_schema(),
+        )
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -648,16 +700,15 @@ def test_evaluate_handler_warns_on_chain_digest_mismatch_and_continues(caplog: p
         await repository.persist_evaluation(
             submission_id=created.submission_id,
             score_1_10=5,
-            criteria_scores_json={
-                "items": [],
-                "_chain_snapshot": {
+            score_breakdown=_score_breakdown(
+                chain_snapshot={
                     "chain_digest": "stale-digest",
                     "resolved_chain_spec": {},
                     "mismatch_policy": "warn-only",
-                },
-            },
-            organizer_feedback_json={"strengths": [], "issues": [], "recommendations": []},
-            candidate_feedback_json={"summary": "", "what_went_well": [], "what_to_improve": []},
+                }
+            ),
+            organizer_feedback=OrganizerFeedback(strengths=(), issues=(), recommendations=()),
+            candidate_feedback=CandidateFeedback(summary="", what_went_well=(), what_to_improve=()),
             ai_assistance_likelihood=0.1,
             ai_assistance_confidence=0.2,
             reproducibility_subset={

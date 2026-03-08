@@ -6,6 +6,7 @@ import os
 import pytest
 
 from app.clients.s3 import build_s3_storage_client
+from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskScoreBreakdown, CriterionScore, parse_task_schema
 from app.domain.errors import DomainInvariantError
 from app.domain.models import CandidateSourceType
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
@@ -310,9 +311,27 @@ def test_reproducibility_metadata_persistence_contract() -> None:
             await repo.persist_evaluation(
                 submission_id=created.submission_id,
                 score_1_10=8,
-                criteria_scores_json={"correctness": 8},
-                organizer_feedback_json={"strengths": ["clear"]},
-                candidate_feedback_json={"summary": "good"},
+                score_breakdown=ScoreBreakdown(
+                    schema_version="task-criteria:v1",
+                    tasks=(
+                        TaskScoreBreakdown(
+                            task_id="task_main",
+                            score_1_10=8,
+                            weight=1.0,
+                            criteria=(
+                                CriterionScore(
+                                    criterion_id="correctness",
+                                    score=8,
+                                    reason="clear",
+                                    weight=1.0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    overall_score_1_10_derived=8,
+                ),
+                organizer_feedback=OrganizerFeedback(strengths=("clear",), issues=(), recommendations=()),
+                candidate_feedback=CandidateFeedback(summary="good", what_went_well=(), what_to_improve=()),
                 ai_assistance_likelihood=0.35,
                 ai_assistance_confidence=0.55,
                 reproducibility_subset=reproducibility,
@@ -325,7 +344,7 @@ def test_reproducibility_metadata_persistence_contract() -> None:
                     "SELECT chain_version, spec_version, response_language, model FROM llm_runs LIMIT 1"
                 )
                 eval_row = await conn.fetchrow(
-                    "SELECT criteria_scores_json, ai_assistance_likelihood, confidence FROM evaluations LIMIT 1"
+                    "SELECT score_breakdown, ai_assistance_likelihood, confidence FROM evaluations LIMIT 1"
                 )
 
             assert llm_row is not None
@@ -334,8 +353,8 @@ def test_reproducibility_metadata_persistence_contract() -> None:
             assert llm_row["response_language"] == "ru"
             assert llm_row["model"] == "model:v1"
             assert eval_row is not None
-            assert eval_row["criteria_scores_json"]["_reproducibility"]["chain_version"] == "chain:v1"
-            assert eval_row["criteria_scores_json"]["_reproducibility"]["spec_version"] == "chain-spec:v1"
+            assert eval_row["score_breakdown"]["_reproducibility"]["chain_version"] == "chain:v1"
+            assert eval_row["score_breakdown"]["_reproducibility"]["spec_version"] == "chain-spec:v1"
             assert eval_row["ai_assistance_likelihood"] == pytest.approx(0.35)
             assert eval_row["confidence"] == pytest.approx(0.55)
         finally:
@@ -489,7 +508,26 @@ def test_real_s3_artifact_link_round_trip_when_credentials_available() -> None:
 
 async def _seed_candidate_assignment(repo: PostgresWorkRepository) -> tuple[str, str]:
     candidate = await repo.create_candidate(first_name="Seed", last_name="Candidate")
-    assignment = await repo.create_assignment(title="Seed Assignment", description="seed")
+    assignment = await repo.create_assignment(
+        title="Seed Assignment",
+        description="seed",
+        language="en",
+        task_schema=parse_task_schema(
+            {
+                "schema_version": "task-criteria:v1",
+                "tasks": [
+                    {
+                        "task_id": "task_main",
+                        "title": "Main task",
+                        "weight": 1.0,
+                        "criteria": [
+                            {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                        ],
+                    }
+                ],
+            }
+        ),
+    )
     return candidate.candidate_public_id, assignment.assignment_public_id
 
 

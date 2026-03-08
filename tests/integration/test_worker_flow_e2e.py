@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
+from app.domain.evaluation_contracts import parse_task_schema
 from app.domain.dto import LLMClientResult
 from app.lib.artifacts import build_artifact_repository
 from app.repositories.stub import InMemoryWorkRepository
@@ -36,7 +37,26 @@ def test_worker_loops_cover_full_backend_flow() -> None:
             first_name="Flow",
             last_name="Candidate",
         )
-        assignment = await repository.create_assignment(title="Flow Assignment", description="Flow Description")
+        assignment = await repository.create_assignment(
+            title="Flow Assignment",
+            description="Flow Description",
+            language="en",
+            task_schema=parse_task_schema(
+                {
+                    "schema_version": "task-criteria:v1",
+                    "tasks": [
+                        {
+                            "task_id": "task_main",
+                            "title": "Main task",
+                            "weight": 1.0,
+                            "criteria": [
+                                {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                            ],
+                        }
+                    ],
+                }
+            ),
+        )
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -147,7 +167,9 @@ def test_worker_evaluate_supports_multitask_assignment_criteria() -> None:
         assignment = await repository.create_assignment(
             title="Flow Multitask",
             description="Flow Description",
-            criteria_schema_json={
+            language="en",
+            task_schema=parse_task_schema(
+                {
                 "schema_version": "task-criteria:v1",
                 "tasks": [
                     {
@@ -168,7 +190,8 @@ def test_worker_evaluate_supports_multitask_assignment_criteria() -> None:
                         ],
                     },
                 ],
-            },
+                }
+            ),
         )
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
@@ -205,10 +228,10 @@ def test_worker_evaluate_supports_multitask_assignment_criteria() -> None:
         assert await evaluate_loop.run_once() is True
 
         assert repository.evaluations
-        criteria_payload = repository.evaluations[0]["criteria_scores_json"]
-        assert isinstance(criteria_payload, dict)
-        assert criteria_payload["task_order"] == ["task_1", "task_2"]
-        assert criteria_payload["task_scores"] == {"task_1": 8, "task_2": 9}
+        score_payload = repository.evaluations[0]["score_breakdown"]
+        assert isinstance(score_payload, dict)
+        assert score_payload["task_order"] == ["task_1", "task_2"]
+        assert score_payload["task_scores"] == {"task_1": 8, "task_2": 9}
         assert repository.evaluations[0]["score_1_10"] == 8
 
     asyncio.run(_run())
