@@ -39,9 +39,8 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
 
         item = items[0]
         evaluation = item.evaluation
-        candidate_feedback = evaluation.candidate_feedback_json if evaluation else {}
-        summary_value = candidate_feedback.get("summary") if isinstance(candidate_feedback, dict) else None
-        summary = str(summary_value) if summary_value is not None else None
+        candidate_feedback = evaluation.candidate_feedback if evaluation else None
+        summary = candidate_feedback.summary if candidate_feedback is not None else None
 
         feedback = build_feedback(
             BuildFeedbackCommand(

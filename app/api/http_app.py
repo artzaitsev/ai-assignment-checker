@@ -370,21 +370,22 @@ def build_app(
             api_deps,
             title=request.title,
             description=request.description,
-            criteria_schema_json=request.criteria_schema_json,
+            language=request.language,
+            task_schema=request.task_schema.to_domain(),
             is_active=request.is_active,
         )
 
     @app.get("/assignments", response_model=ListAssignmentsResponse, response_model_exclude_none=True, tags=["Assignments"])
     async def list_assignments(
         active_only: bool = Query(default=True),
-        include_criteria: bool = Query(default=False),
+        include_task_schema: bool = Query(default=False),
     ) -> ListAssignmentsResponse:
         if api_deps is None:
             raise HTTPException(status_code=503, detail="api dependencies are not available")
         return await list_assignments_handler(
             api_deps,
             active_only=active_only,
-            include_criteria=include_criteria,
+            include_task_schema=include_task_schema,
         )
 
     @app.get("/feedback", response_model=FeedbackListResponse, tags=["Submissions"])

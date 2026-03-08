@@ -14,6 +14,8 @@ CREATE TABLE assignments (
   public_id TEXT NOT NULL UNIQUE CHECK (public_id ~ '^asg_[0-9A-HJKMNP-TV-Z]{26}$'),
   title TEXT NOT NULL,
   description TEXT NOT NULL,
+  language TEXT NOT NULL CHECK (language ~ '^[a-z]{2}(?:-[A-Z]{2})?$'),
+  task_schema JSONB NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -21,6 +23,7 @@ CREATE TABLE assignments (
 
 CREATE INDEX assignments_public_id_idx ON assignments (public_id);
 CREATE INDEX assignments_active_idx ON assignments (is_active);
+CREATE INDEX assignments_language_idx ON assignments (language);
 
 CREATE TABLE candidate_sources (
   id BIGSERIAL PRIMARY KEY,
@@ -112,9 +115,9 @@ CREATE TABLE evaluations (
   id BIGSERIAL PRIMARY KEY,
   submission_id BIGINT NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
   score_1_10 INTEGER,
-  criteria_scores_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  organizer_feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  candidate_feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+  organizer_feedback JSONB NOT NULL DEFAULT '{}'::jsonb,
+  candidate_feedback JSONB NOT NULL DEFAULT '{}'::jsonb,
   ai_assistance_likelihood DOUBLE PRECISION,
   confidence DOUBLE PRECISION,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -155,3 +158,9 @@ CREATE TABLE deliveries (
 );
 
 CREATE INDEX deliveries_submission_idx ON deliveries (submission_id);
+
+CREATE TABLE worker_checkpoints (
+  stream TEXT PRIMARY KEY,
+  cursor TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

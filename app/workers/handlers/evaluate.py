@@ -9,6 +9,7 @@ from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import EvaluateSubmissionCommand
 from app.domain.models import AssignmentSnapshot, ProcessResult, SubmissionFieldGroup, SubmissionListQuery, WorkItemClaim
 from app.domain.use_cases.llm_eval import evaluate_submission
+from app.services.runtime_settings import llm_settings_from_env
 from app.workers.handlers.deps import WorkerDeps
 
 COMPONENT_ID = "worker.evaluate.process_claim"
@@ -50,8 +51,10 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
                 normalized_artifact=normalized_artifact,
                 assignment_title=assignment.title,
                 assignment_description=assignment.description,
-                criteria_schema_json=assignment.criteria_schema_json,
+                assignment_language=assignment.language,
+                task_schema=_require_task_schema(assignment),
                 chain_spec=chain_spec,
+                effective_model=_resolve_effective_model(deps=deps),
             ),
             llm=deps.llm,
         )
@@ -97,16 +100,15 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     await deps.repository.persist_evaluation(
         submission_id=claim.item_id,
         score_1_10=result.score_1_10,
-        criteria_scores_json={
-            **result.criteria_scores_json,
-            "_chain_snapshot": {
+        score_breakdown=result.score_breakdown.with_chain_snapshot(
+            {
                 "chain_digest": current_chain_digest,
                 "resolved_chain_spec": current_chain_payload,
                 "mismatch_policy": CHAIN_MISMATCH_POLICY,
-            },
-        },
-        organizer_feedback_json=result.organizer_feedback_json,
-        candidate_feedback_json=result.candidate_feedback_json,
+            }
+        ),
+        organizer_feedback=result.organizer_feedback,
+        candidate_feedback=result.candidate_feedback,
         ai_assistance_likelihood=result.ai_assistance_likelihood,
         ai_assistance_confidence=result.ai_assistance_confidence,
         reproducibility_subset=result.reproducibility_subset,
@@ -129,7 +131,7 @@ async def _resolve_assignment(
     if submission is not None and submission.assignment_public_id not in assignment_candidates:
         assignment_candidates.append(submission.assignment_public_id)
 
-    assignments = await deps.repository.list_assignments(active_only=False, include_criteria=True)
+    assignments = await deps.repository.list_assignments(active_only=False, include_task_schema=True)
     for candidate_id in assignment_candidates:
         for item in assignments:
             if item.assignment_public_id == candidate_id:
@@ -154,10 +156,11 @@ async def _load_persisted_chain_digest(deps: WorkerDeps, *, submission_id: str) 
     evaluation = items[0].evaluation
     if evaluation is None:
         return None
-    criteria = evaluation.criteria_scores_json
-    if not isinstance(criteria, dict):
+    score_breakdown = evaluation.score_breakdown
+    if score_breakdown is None:
         return None
-    snapshot = criteria.get("_chain_snapshot")
+    payload = score_breakdown.to_dict()
+    snapshot = payload.get("_chain_snapshot")
     if not isinstance(snapshot, dict):
         return None
     digest = snapshot.get("chain_digest")
@@ -171,3 +174,16 @@ def _resolve_llm_api_base(*, llm: object) -> str:
     if isinstance(api_base, str) and api_base.strip():
         return api_base
     raise ValueError("llm client base_url must be configured")
+
+
+def _resolve_effective_model(*, deps: WorkerDeps) -> str:
+    configured_model = getattr(deps.llm, "model", None)
+    if isinstance(configured_model, str) and configured_model.strip():
+        return configured_model
+    return llm_settings_from_env().model
+
+
+def _require_task_schema(assignment: AssignmentSnapshot):
+    if assignment.task_schema is None:
+        raise ValueError(f"assignment task_schema is missing for {assignment.assignment_public_id}")
+    return assignment.task_schema

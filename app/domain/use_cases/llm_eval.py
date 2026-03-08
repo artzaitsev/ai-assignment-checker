@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 
-from app.domain.assignment_criteria import AssignmentCriteriaSchema, parse_assignment_criteria_schema
+from app.domain.evaluation_contracts import (
+    CandidateFeedback,
+    CriterionScore,
+    OrganizerFeedback,
+    ScoreBreakdown,
+    TaskSchema,
+    TaskSchemaTask,
+    TaskScoreBreakdown,
+    parse_candidate_feedback,
+    parse_organizer_feedback,
+)
 from app.domain.contracts import LLMClient
 from app.domain.dto import EvaluateSubmissionCommand, EvaluateSubmissionResult, LLMClientRequest
 from app.domain.evaluation_chain import render_user_prompt, validate_llm_response
 from app.domain.scoring import (
-    CriteriaScore,
+    CriteriaScore as WeightedCriterionScore,
     TaskScore,
     deterministic_score_1_10,
     deterministic_weighted_overall_score_1_10,
@@ -16,18 +27,46 @@ from app.domain.scoring import (
 COMPONENT_ID = "domain.llm.evaluate"
 
 
+@dataclass(frozen=True)
+class LLMTaskCriterionPayload:
+    criterion_id: str
+    score: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class LLMTaskPayload:
+    task_id: str
+    criteria: tuple[LLMTaskCriterionPayload, ...]
+
+
+@dataclass(frozen=True)
+class LLMAIAssistancePayload:
+    likelihood: float
+    confidence: float
+    raw_fields: dict[str, object]
+
+
+@dataclass(frozen=True)
+class LLMEvaluationPayload:
+    tasks: tuple[LLMTaskPayload, ...]
+    organizer_feedback: OrganizerFeedback
+    candidate_feedback: CandidateFeedback
+    ai_assistance: LLMAIAssistancePayload
+
+
 def evaluate_submission(
     cmd: EvaluateSubmissionCommand,
     *,
     llm: LLMClient,
 ) -> EvaluateSubmissionResult:
     """Evaluate normalized content using chain spec and deterministic scoring."""
-    criteria_schema = _resolve_criteria_schema(cmd.criteria_schema_json)
     prompt_inputs: dict[str, object] = {
         "assignment": {
             "title": cmd.assignment_title,
             "description": cmd.assignment_description,
-            "criteria_schema_json": cmd.criteria_schema_json,
+            "language": cmd.assignment_language,
+            "task_schema": cmd.task_schema.to_dict(),
         },
         "normalized": {
             "content_markdown": cmd.normalized_artifact.content_markdown,
@@ -43,10 +82,10 @@ def evaluate_submission(
         LLMClientRequest(
             system_prompt=cmd.chain_spec.prompts.system,
             user_prompt=user_prompt,
-            model=cmd.chain_spec.model,
+            model=cmd.effective_model,
             temperature=cmd.chain_spec.runtime.temperature,
             seed=cmd.chain_spec.runtime.seed,
-            response_language=cmd.chain_spec.runtime.response_language,
+            response_language=cmd.assignment_language,
         )
     )
 
@@ -60,189 +99,234 @@ def evaluate_submission(
             raise ValueError("llm output root must be JSON object")
         payload = loaded
 
-    if criteria_schema is None:
-        score_1_10, criteria_scores_json = _parse_legacy_scores(payload=payload, cmd=cmd)
-    else:
-        score_1_10, criteria_scores_json = _parse_multitask_scores(payload=payload, schema=criteria_schema)
+    validate_llm_response(payload=payload, schema=cmd.chain_spec.llm_response)
+    typed_payload = _parse_llm_evaluation_payload(payload)
+    score_1_10, score_breakdown = _parse_task_scores(payload=typed_payload, schema=cmd.task_schema)
 
-    organizer_feedback = payload.get("organizer_feedback")
-    candidate_feedback = payload.get("candidate_feedback")
-    ai_assistance = payload.get("ai_assistance")
-    if not isinstance(organizer_feedback, dict):
-        raise ValueError("organizer_feedback must be object")
-    if not isinstance(candidate_feedback, dict):
-        raise ValueError("candidate_feedback must be object")
-    if not isinstance(ai_assistance, dict):
-        raise ValueError("ai_assistance must be object")
+    parsed_organizer_feedback = typed_payload.organizer_feedback
+    parsed_candidate_feedback = typed_payload.candidate_feedback
 
     required_ai_fields = cmd.chain_spec.rubric.ai_assistance_policy.require_fields
     for field in required_ai_fields:
-        if field not in ai_assistance:
+        if field not in typed_payload.ai_assistance.raw_fields:
             raise ValueError(f"ai_assistance.{field} is required by chain policy")
-    likelihood = ai_assistance.get("likelihood")
-    confidence = ai_assistance.get("confidence")
-    if not isinstance(likelihood, (int, float)):
-        raise ValueError("ai_assistance.likelihood must be number")
-    if not isinstance(confidence, (int, float)):
-        raise ValueError("ai_assistance.confidence must be number")
 
     return EvaluateSubmissionResult(
-        model=cmd.chain_spec.model,
+        model=cmd.effective_model,
         chain_version=cmd.chain_spec.chain_version,
-        response_language=cmd.chain_spec.runtime.response_language,
+        response_language=cmd.assignment_language,
         temperature=cmd.chain_spec.runtime.temperature,
         seed=cmd.chain_spec.runtime.seed,
         tokens_input=llm_result.tokens_input,
         tokens_output=llm_result.tokens_output,
         latency_ms=llm_result.latency_ms,
         score_1_10=score_1_10,
-        criteria_scores_json=criteria_scores_json,
-        organizer_feedback_json=dict(organizer_feedback),
-        candidate_feedback_json=dict(candidate_feedback),
-        ai_assistance_likelihood=float(likelihood),
-        ai_assistance_confidence=float(confidence),
+        score_breakdown=score_breakdown,
+        organizer_feedback=parsed_organizer_feedback,
+        candidate_feedback=parsed_candidate_feedback,
+        ai_assistance_likelihood=typed_payload.ai_assistance.likelihood,
+        ai_assistance_confidence=typed_payload.ai_assistance.confidence,
         reproducibility_subset={
             "chain_version": cmd.chain_spec.chain_version,
             "spec_version": cmd.chain_spec.spec_version,
-            "model": cmd.chain_spec.model,
-            "response_language": cmd.chain_spec.runtime.response_language,
+            "model": cmd.effective_model,
+            "response_language": cmd.assignment_language,
         },
     )
 
 
-def _resolve_criteria_schema(raw: dict[str, object] | None) -> AssignmentCriteriaSchema | None:
-    if raw is None:
-        return None
-    return parse_assignment_criteria_schema(raw)
-
-
-def _parse_legacy_scores(
+def _parse_task_scores(
     *,
-    payload: dict[str, object],
-    cmd: EvaluateSubmissionCommand,
-) -> tuple[int, dict[str, object]]:
-    validate_llm_response(payload=payload, schema=cmd.chain_spec.llm_response)
-
-    criteria_items_raw = payload.get("criteria")
-    if not isinstance(criteria_items_raw, list):
-        raise ValueError("llm response must include criteria array")
-    rubric_weights = {item.id: item.weight for item in cmd.chain_spec.rubric.criteria}
-    criteria_for_score: list[CriteriaScore] = []
-    criteria_scores_json_items: list[dict[str, object]] = []
-    for entry in criteria_items_raw:
-        if not isinstance(entry, dict):
-            raise ValueError("criteria entry must be object")
-        criterion_id = entry.get("id")
-        score = entry.get("score")
-        reason = entry.get("reason")
-        if not isinstance(criterion_id, str) or criterion_id not in rubric_weights:
-            raise ValueError("criteria entry id is invalid")
-        if not isinstance(score, int):
-            raise ValueError("criteria entry score must be integer")
-        if not isinstance(reason, str):
-            raise ValueError("criteria entry reason must be string")
-        criteria_for_score.append(
-            CriteriaScore(name=criterion_id, score=score, weight=rubric_weights[criterion_id])
-        )
-        criteria_scores_json_items.append(
-            {
-                "id": criterion_id,
-                "score": score,
-                "reason": reason,
-                "weight": rubric_weights[criterion_id],
-            }
-        )
-
-    score_1_10 = deterministic_score_1_10(criteria=criteria_for_score)
-    return score_1_10, {"items": criteria_scores_json_items}
-
-
-def _parse_multitask_scores(
-    *,
-    payload: dict[str, object],
-    schema: AssignmentCriteriaSchema,
-) -> tuple[int, dict[str, object]]:
-    tasks_raw = payload.get("tasks")
-    if not isinstance(tasks_raw, list):
-        raise ValueError("llm response must include tasks array")
-    llm_tasks_by_id: dict[str, dict[str, object]] = {}
-    for task in tasks_raw:
-        if not isinstance(task, dict):
-            raise ValueError("tasks entry must be object")
-        task_id = task.get("task_id")
-        if not isinstance(task_id, str) or not task_id:
-            raise ValueError("tasks[].task_id is required")
-        if task_id in llm_tasks_by_id:
-            raise ValueError("tasks[].task_id must be unique")
-        llm_tasks_by_id[task_id] = task
-
-    schema_task_ids = {task.task_id for task in schema.tasks}
-    if set(llm_tasks_by_id.keys()) != schema_task_ids:
-        raise ValueError("llm tasks payload does not match configured task_ids")
-
-    task_scores_json: dict[str, int] = {}
-    task_weights_json: dict[str, float] = {}
+    payload: LLMEvaluationPayload,
+    schema: TaskSchema,
+) -> tuple[int, ScoreBreakdown]:
     task_scores_for_overall: list[TaskScore] = []
-    criteria_items: list[dict[str, object]] = []
+    scored_tasks: list[TaskScoreBreakdown] = []
+    llm_tasks_by_id = _index_llm_tasks_by_id(payload.tasks)
+    _validate_task_ids(llm_task_ids=set(llm_tasks_by_id.keys()), schema=schema)
 
     for task_def in schema.tasks:
-        llm_task = llm_tasks_by_id[task_def.task_id]
-        criteria_raw = llm_task.get("criteria")
-        if not isinstance(criteria_raw, list):
-            raise ValueError("tasks[].criteria must be array")
-
-        llm_criteria_by_id: dict[str, dict[str, object]] = {}
-        for criterion in criteria_raw:
-            if not isinstance(criterion, dict):
-                raise ValueError("tasks[].criteria[] must be object")
-            criterion_id = criterion.get("criterion_id")
-            if not isinstance(criterion_id, str) or not criterion_id:
-                raise ValueError("tasks[].criteria[].criterion_id is required")
-            if criterion_id in llm_criteria_by_id:
-                raise ValueError("tasks[].criteria[].criterion_id must be unique")
-            llm_criteria_by_id[criterion_id] = criterion
-
-        expected_criteria_ids = {item.criterion_id for item in task_def.criteria}
-        if set(llm_criteria_by_id.keys()) != expected_criteria_ids:
-            raise ValueError("llm criteria payload does not match configured criterion_ids")
-
-        criteria_for_task: list[CriteriaScore] = []
-        for criterion_def in task_def.criteria:
-            llm_criterion = llm_criteria_by_id[criterion_def.criterion_id]
-            score = llm_criterion.get("score")
-            reason = llm_criterion.get("reason")
-            if not isinstance(score, int):
-                raise ValueError("tasks[].criteria[].score must be integer")
-            if score < 1 or score > 10:
-                raise ValueError("tasks[].criteria[].score must be between 1 and 10")
-            if not isinstance(reason, str):
-                raise ValueError("tasks[].criteria[].reason must be string")
-            criteria_for_task.append(
-                CriteriaScore(name=criterion_def.criterion_id, score=score, weight=criterion_def.weight)
-            )
-            criteria_items.append(
-                {
-                    "task_id": task_def.task_id,
-                    "id": criterion_def.criterion_id,
-                    "score": score,
-                    "reason": reason,
-                    "weight": criterion_def.weight,
-                }
-            )
-
-        task_score = deterministic_score_1_10(criteria=criteria_for_task)
-        task_scores_json[task_def.task_id] = task_score
-        task_weights_json[task_def.task_id] = task_def.weight
-        task_scores_for_overall.append(
-            TaskScore(task_id=task_def.task_id, score=task_score, weight=task_def.weight)
-        )
+        scored_task, task_score = _score_task(task_def=task_def, llm_task=llm_tasks_by_id[task_def.task_id])
+        task_scores_for_overall.append(TaskScore(task_id=task_def.task_id, score=task_score, weight=task_def.weight))
+        scored_tasks.append(scored_task)
 
     overall_score_1_10 = deterministic_weighted_overall_score_1_10(task_scores=task_scores_for_overall)
-    return overall_score_1_10, {
-        "items": criteria_items,
-        "task_order": [task.task_id for task in schema.tasks],
-        "task_scores": task_scores_json,
-        "task_weights": task_weights_json,
-        "overall_score_1_10_derived": overall_score_1_10,
-        "schema_version": schema.schema_version,
-    }
+    return overall_score_1_10, ScoreBreakdown(
+        schema_version=schema.schema_version,
+        tasks=tuple(scored_tasks),
+        overall_score_1_10_derived=overall_score_1_10,
+    )
+
+
+def _score_task(
+    *,
+    task_def: TaskSchemaTask,
+    llm_task: LLMTaskPayload,
+) -> tuple[TaskScoreBreakdown, int]:
+    llm_criteria_by_id = _index_llm_criteria_by_id(llm_task.criteria)
+    _validate_criterion_ids(llm_criterion_ids=set(llm_criteria_by_id.keys()), task_def=task_def)
+
+    criteria_for_task: list[WeightedCriterionScore] = []
+    scored_criteria: list[CriterionScore] = []
+    for criterion_def in task_def.criteria:
+        llm_criterion = llm_criteria_by_id[criterion_def.criterion_id]
+        criteria_for_task.append(
+            WeightedCriterionScore(
+                name=criterion_def.criterion_id,
+                score=llm_criterion.score,
+                weight=criterion_def.weight,
+            )
+        )
+        scored_criteria.append(
+            CriterionScore(
+                criterion_id=criterion_def.criterion_id,
+                score=llm_criterion.score,
+                reason=llm_criterion.reason,
+                weight=criterion_def.weight,
+            )
+        )
+
+    task_score = deterministic_score_1_10(criteria=criteria_for_task)
+    return (
+        TaskScoreBreakdown(
+            task_id=task_def.task_id,
+            score_1_10=task_score,
+            weight=task_def.weight,
+            criteria=tuple(scored_criteria),
+        ),
+        task_score,
+    )
+
+
+def _index_llm_tasks_by_id(tasks: tuple[LLMTaskPayload, ...]) -> dict[str, LLMTaskPayload]:
+    return {task.task_id: task for task in tasks}
+
+
+def _validate_task_ids(*, llm_task_ids: set[str], schema: TaskSchema) -> None:
+    schema_task_ids = {task.task_id for task in schema.tasks}
+    if llm_task_ids != schema_task_ids:
+        raise ValueError("llm tasks payload does not match configured task_ids")
+
+
+def _index_llm_criteria_by_id(
+    criteria: tuple[LLMTaskCriterionPayload, ...],
+) -> dict[str, LLMTaskCriterionPayload]:
+    return {criterion.criterion_id: criterion for criterion in criteria}
+
+
+def _validate_criterion_ids(*, llm_criterion_ids: set[str], task_def: TaskSchemaTask) -> None:
+    expected_criteria_ids = {item.criterion_id for item in task_def.criteria}
+    if llm_criterion_ids != expected_criteria_ids:
+        raise ValueError("llm criteria payload does not match configured criterion_ids")
+
+
+# LLM payload parsing helpers.
+def _parse_llm_evaluation_payload(payload: dict[str, object]) -> LLMEvaluationPayload:
+    return LLMEvaluationPayload(
+        tasks=_parse_llm_tasks(payload),
+        organizer_feedback=parse_organizer_feedback(_require_object_field(payload, "organizer_feedback")),
+        candidate_feedback=parse_candidate_feedback(_require_object_field(payload, "candidate_feedback")),
+        ai_assistance=_parse_llm_ai_assistance(_require_object_field(payload, "ai_assistance")),
+    )
+
+
+def _parse_llm_tasks(payload: dict[str, object]) -> tuple[LLMTaskPayload, ...]:
+    tasks_raw = _require_list(payload, "tasks", "llm response")
+    tasks: list[LLMTaskPayload] = []
+    seen_task_ids: set[str] = set()
+    for task_item in tasks_raw:
+        task = _parse_llm_task(task_item)
+        if task.task_id in seen_task_ids:
+            raise ValueError("tasks[].task_id must be unique")
+        seen_task_ids.add(task.task_id)
+        tasks.append(task)
+    return tuple(tasks)
+
+
+def _parse_llm_task(task_item: object) -> LLMTaskPayload:
+    task = _require_object(task_item, "tasks entry")
+    task_id = _require_non_empty_str(task, "task_id", "tasks[].task_id")
+    criteria = _parse_llm_criteria(task)
+    return LLMTaskPayload(task_id=task_id, criteria=criteria)
+
+
+def _parse_llm_criteria(task: dict[str, object]) -> tuple[LLMTaskCriterionPayload, ...]:
+    criteria_raw = _require_list(task, "criteria", "tasks[]")
+    criteria: list[LLMTaskCriterionPayload] = []
+    seen_criterion_ids: set[str] = set()
+    for criterion_item in criteria_raw:
+        criterion = _parse_llm_criterion(criterion_item)
+        if criterion.criterion_id in seen_criterion_ids:
+            raise ValueError("tasks[].criteria[].criterion_id must be unique")
+        seen_criterion_ids.add(criterion.criterion_id)
+        criteria.append(criterion)
+    return tuple(criteria)
+
+
+def _parse_llm_criterion(criterion_item: object) -> LLMTaskCriterionPayload:
+    criterion = _require_object(criterion_item, "tasks[].criteria[]")
+    criterion_id = _require_non_empty_str(
+        criterion,
+        "criterion_id",
+        "tasks[].criteria[].criterion_id",
+    )
+    score = _require_score(criterion, "score", "tasks[].criteria[].score")
+    reason = _require_str(criterion, "reason", "tasks[].criteria[].reason")
+    return LLMTaskCriterionPayload(criterion_id=criterion_id, score=score, reason=reason)
+
+
+def _parse_llm_ai_assistance(ai_assistance: dict[str, object]) -> LLMAIAssistancePayload:
+    likelihood = ai_assistance.get("likelihood")
+    confidence = ai_assistance.get("confidence")
+    if not isinstance(likelihood, (int, float)):
+        raise ValueError("ai_assistance.likelihood must be number")
+    if not isinstance(confidence, (int, float)):
+        raise ValueError("ai_assistance.confidence must be number")
+    return LLMAIAssistancePayload(
+        likelihood=float(likelihood),
+        confidence=float(confidence),
+        raw_fields=dict(ai_assistance),
+    )
+
+
+def _require_object(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be object")
+    return value
+
+
+def _require_object_field(data: dict[str, object], key: str) -> dict[str, object]:
+    value = data.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be object")
+    return value
+
+
+def _require_list(data: dict[str, object], key: str, path: str) -> list[object]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        raise ValueError(f"{path}.{key} must be array")
+    return value
+
+
+def _require_str(data: dict[str, object], key: str, path: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{path} must be string")
+    return value
+
+
+def _require_non_empty_str(data: dict[str, object], key: str, path: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{path} is required")
+    return value
+
+
+def _require_score(data: dict[str, object], key: str, path: str) -> int:
+    value = data.get(key)
+    if not isinstance(value, int):
+        raise ValueError(f"{path} must be integer")
+    if value < 1 or value > 10:
+        raise ValueError(f"{path} must be between 1 and 10")
+    return value

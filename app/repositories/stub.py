@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from app.domain.evaluation_contracts import (
+    CandidateFeedback,
+    OrganizerFeedback,
+    ScoreBreakdown,
+    TaskSchema,
+    parse_candidate_feedback,
+    parse_organizer_feedback,
+    parse_score_breakdown,
+    parse_task_schema,
+)
 from app.domain.errors import DomainInvariantError
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.ids import new_assignment_public_id, new_candidate_public_id, new_submission_public_id
@@ -35,7 +45,8 @@ class _AssignmentRow:
     assignment_public_id: str
     title: str
     description: str
-    criteria_schema_json: dict[str, object] | None
+    language: str
+    task_schema: TaskSchema | None
     is_active: bool
 
 
@@ -138,7 +149,8 @@ class InMemoryWorkRepository:
         *,
         title: str,
         description: str,
-        criteria_schema_json: dict[str, object] | None = None,
+        language: str,
+        task_schema: TaskSchema,
         is_active: bool = True,
     ) -> AssignmentSnapshot:
         assignment_public_id = new_assignment_public_id()
@@ -146,7 +158,8 @@ class InMemoryWorkRepository:
             assignment_public_id=assignment_public_id,
             title=title,
             description=description,
-            criteria_schema_json=dict(criteria_schema_json) if isinstance(criteria_schema_json, dict) else None,
+            language=language,
+            task_schema=task_schema,
             is_active=is_active,
         )
         self.assignments[assignment_public_id] = row
@@ -154,7 +167,8 @@ class InMemoryWorkRepository:
             assignment_public_id=row.assignment_public_id,
             title=row.title,
             description=row.description,
-            criteria_schema_json=dict(row.criteria_schema_json) if isinstance(row.criteria_schema_json, dict) else None,
+            language=row.language,
+            task_schema=row.task_schema,
             is_active=row.is_active,
         )
 
@@ -162,18 +176,15 @@ class InMemoryWorkRepository:
         self,
         *,
         active_only: bool = True,
-        include_criteria: bool = False,
+        include_task_schema: bool = False,
     ) -> list[AssignmentSnapshot]:
         items = [
             AssignmentSnapshot(
                 assignment_public_id=row.assignment_public_id,
                 title=row.title,
                 description=row.description,
-                criteria_schema_json=(
-                    dict(row.criteria_schema_json)
-                    if include_criteria and isinstance(row.criteria_schema_json, dict)
-                    else None
-                ),
+                language=row.language,
+                task_schema=row.task_schema if include_task_schema else None,
                 is_active=row.is_active,
             )
             for row in self.assignments.values()
@@ -181,6 +192,10 @@ class InMemoryWorkRepository:
         ]
         items.sort(key=lambda item: item.assignment_public_id)
         return items
+
+    async def ensure_no_null_task_schema_rows(self) -> None:
+        if any(row.task_schema is None for row in self.assignments.values()):
+            raise DomainInvariantError("rollout blocked: assignments.task_schema contains NULL rows")
 
     async def create_submission_with_source(
         self,
@@ -284,9 +299,9 @@ class InMemoryWorkRepository:
 
             include = set(query.include) | {SubmissionFieldGroup.CORE}
             score_value = _as_int(eval_row.get("score_1_10") if eval_row else None)
-            criteria_json = _as_json_dict(eval_row.get("criteria_scores_json") if eval_row else None)
-            organizer_json = _as_json_dict(eval_row.get("organizer_feedback_json") if eval_row else None)
-            candidate_json = _as_json_dict(eval_row.get("candidate_feedback_json") if eval_row else None)
+            score_breakdown_raw = _as_json_dict(eval_row.get("score_breakdown") if eval_row else None)
+            organizer_raw = _as_json_dict(eval_row.get("organizer_feedback") if eval_row else None)
+            candidate_raw = _as_json_dict(eval_row.get("candidate_feedback") if eval_row else None)
 
             items.append(
                 SubmissionListItem(
@@ -308,9 +323,9 @@ class InMemoryWorkRepository:
                     else None,
                     evaluation=SubmissionListItem.Evaluation(
                         score_1_10=score_value,
-                        criteria_scores_json=criteria_json if eval_row else None,
-                        organizer_feedback_json=organizer_json if eval_row else None,
-                        candidate_feedback_json=candidate_json if eval_row else None,
+                        score_breakdown=_parse_optional_score_breakdown(score_breakdown_raw),
+                        organizer_feedback=_parse_optional_organizer_feedback(organizer_raw),
+                        candidate_feedback=_parse_optional_candidate_feedback(candidate_raw),
                         chain_version=str(llm_row["chain_version"]) if llm_row else None,
                         model=str(llm_row["model"]) if llm_row else None,
                         spec_version=str(llm_row["spec_version"]) if llm_row else None,
@@ -501,9 +516,9 @@ class InMemoryWorkRepository:
         *,
         submission_id: str,
         score_1_10: int,
-        criteria_scores_json: dict[str, object],
-        organizer_feedback_json: dict[str, object],
-        candidate_feedback_json: dict[str, object],
+        score_breakdown,
+        organizer_feedback,
+        candidate_feedback,
         ai_assistance_likelihood: float,
         ai_assistance_confidence: float,
         reproducibility_subset: dict[str, str],
@@ -512,9 +527,9 @@ class InMemoryWorkRepository:
         payload = {
             "submission_id": submission_id,
             "score_1_10": score_1_10,
-            "criteria_scores_json": dict(criteria_scores_json),
-            "organizer_feedback_json": dict(organizer_feedback_json),
-            "candidate_feedback_json": dict(candidate_feedback_json),
+            "score_breakdown": score_breakdown.with_reproducibility(reproducibility_subset).to_dict(),
+            "organizer_feedback": organizer_feedback.to_dict(),
+            "candidate_feedback": candidate_feedback.to_dict(),
             "ai_assistance_likelihood": ai_assistance_likelihood,
             "ai_assistance_confidence": ai_assistance_confidence,
             "reproducibility_subset": dict(reproducibility_subset),
@@ -590,3 +605,21 @@ def _as_json_dict(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         return None
     return {str(key): val for key, val in value.items()}
+
+
+def _parse_optional_score_breakdown(value: dict[str, object] | None) -> ScoreBreakdown | None:
+    if value is None:
+        return None
+    return parse_score_breakdown(value)
+
+
+def _parse_optional_organizer_feedback(value: dict[str, object] | None) -> OrganizerFeedback | None:
+    if value is None:
+        return None
+    return parse_organizer_feedback(value)
+
+
+def _parse_optional_candidate_feedback(value: dict[str, object] | None) -> CandidateFeedback | None:
+    if value is None:
+        return None
+    return parse_candidate_feedback(value)

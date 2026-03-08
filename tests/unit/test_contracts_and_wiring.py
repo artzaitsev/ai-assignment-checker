@@ -5,6 +5,7 @@ import pytest
 from app.clients.llm import OpenAICompatibleLLMClient
 from app.clients.stub import StubLLMClient, StubStorageClient
 from app.domain.contracts import CLAIM_SQL_CONTRACT, STORAGE_PREFIXES
+from app.domain.evaluation_contracts import parse_task_schema
 from app.repositories.postgres import PostgresWorkRepository
 from app.repositories.stub import InMemoryWorkRepository
 from app.roles import validate_role
@@ -86,7 +87,26 @@ async def _seed_and_create_submission(
     initial_status: str,
 ) -> None:
     candidate = await repository.create_candidate(first_name="Test", last_name="Candidate")
-    assignment = await repository.create_assignment(title="Task", description="desc")
+    assignment = await repository.create_assignment(
+        title="Task",
+        description="desc",
+        language="en",
+        task_schema=parse_task_schema(
+            {
+                "schema_version": "task-criteria:v1",
+                "tasks": [
+                    {
+                        "task_id": "task_main",
+                        "title": "Main task",
+                        "weight": 1.0,
+                        "criteria": [
+                            {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                        ],
+                    }
+                ],
+            }
+        ),
+    )
     await repository.create_submission_with_source(
         candidate_public_id=candidate.candidate_public_id,
         assignment_public_id=assignment.assignment_public_id,

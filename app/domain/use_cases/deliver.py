@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from app.domain.evaluation_contracts import ScoreBreakdown
 from app.lib.artifacts.types import ExportRowArtifact
 from app.domain.dto import (
     BuildFeedbackCommand,
@@ -59,28 +60,21 @@ def prepare_export(cmd: PrepareExportCommand) -> PrepareExportResult:
         model = cast(str, model)
         response_language = cast(str, response_language)
 
-        candidate_feedback_raw = evaluation.candidate_feedback_json if evaluation else None
-        organizer_feedback_raw = evaluation.organizer_feedback_json if evaluation else None
-        criteria_json_raw = evaluation.criteria_scores_json if evaluation else None
-        candidate_feedback: dict[str, object] = (
-            dict(candidate_feedback_raw) if isinstance(candidate_feedback_raw, dict) else {}
-        )
-        organizer_feedback: dict[str, object] = (
-            dict(organizer_feedback_raw) if isinstance(organizer_feedback_raw, dict) else {}
-        )
-        criteria_json: dict[str, object] = dict(criteria_json_raw) if isinstance(criteria_json_raw, dict) else {}
-        criteria_items_raw = criteria_json.get("items", []) if isinstance(criteria_json, dict) else []
-        criteria_items = criteria_items_raw if isinstance(criteria_items_raw, list) else []
-        criteria_summary = "; ".join(
-            f"{criterion.get('id')}:{criterion.get('score')}"
-            for criterion in criteria_items
-            if isinstance(criterion, dict)
-        )
-        task_scores_summary = _build_task_scores_summary(criteria_json)
+        candidate_feedback = evaluation.candidate_feedback
+        organizer_feedback = evaluation.organizer_feedback
+        score_breakdown = evaluation.score_breakdown
+        if candidate_feedback is None or organizer_feedback is None or score_breakdown is None:
+            continue
 
-        strengths = _join_text_list(organizer_feedback.get("strengths"))
-        issues = _join_text_list(organizer_feedback.get("issues"))
-        recommendations = _join_text_list(organizer_feedback.get("recommendations"))
+        criteria_summary = "; ".join(
+            f"{criterion.criterion_id}:{criterion.score}"
+            for criterion in score_breakdown.criterion_items()
+        )
+        task_scores_summary = _build_task_scores_summary(score_breakdown)
+
+        strengths = _join_text_list(organizer_feedback.strengths)
+        issues = _join_text_list(organizer_feedback.issues)
+        recommendations = _join_text_list(organizer_feedback.recommendations)
 
         rows.append(
             ExportRowArtifact(
@@ -102,27 +96,15 @@ def prepare_export(cmd: PrepareExportCommand) -> PrepareExportResult:
     return PrepareExportResult(export_rows=rows)
 
 
-def _join_text_list(value: object) -> str:
-    if not isinstance(value, list):
-        return ""
-    return "; ".join(str(item) for item in value)
+def _join_text_list(value: tuple[str, ...] | list[str]) -> str:
+    return "; ".join(value)
 
 
-def _build_task_scores_summary(criteria_json: dict[str, object]) -> str:
-    task_order_raw = criteria_json.get("task_order")
-    task_scores_raw = criteria_json.get("task_scores")
-    if not isinstance(task_order_raw, list) or not isinstance(task_scores_raw, dict):
-        return ""
-
-    task_order: list[str] = [task_id for task_id in task_order_raw if isinstance(task_id, str)]
-    if len(task_order) != len(task_order_raw):
-        return ""
-
+def _build_task_scores_summary(score_breakdown: ScoreBreakdown) -> str:
     parts: list[str] = []
-    for task_id in task_order:
-        score = task_scores_raw.get(task_id)
-        if not isinstance(score, int):
-            continue
+    for task in score_breakdown.tasks:
+        task_id = task.task_id
+        score = task.score_1_10
         safe_task_id = task_id.encode("ascii", errors="ignore").decode("ascii")
         parts.append(f"{safe_task_id}:{score}")
     return ";".join(parts)

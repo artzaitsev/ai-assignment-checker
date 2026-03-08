@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.domain.evaluation_contracts import parse_task_schema
 from app.domain.errors import DomainInvariantError
 from app.domain.models import ProcessResult, WorkItemClaim
 from app.repositories.stub import InMemoryWorkRepository
@@ -21,6 +22,24 @@ async def _process(claim: WorkItemClaim) -> ProcessResult:
         detail="ok",
         artifact_ref=f"exports/{claim.item_id}.json",
         artifact_version="test",
+    )
+
+
+def _task_schema():
+    return parse_task_schema(
+        {
+            "schema_version": "task-criteria:v1",
+            "tasks": [
+                {
+                    "task_id": "task_main",
+                    "title": "Main task",
+                    "weight": 1.0,
+                    "criteria": [
+                        {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                    ],
+                }
+            ],
+        }
     )
 
 
@@ -82,7 +101,12 @@ def test_worker_loop_maintains_lease_during_processing() -> None:
     async def _run() -> None:
         repository = InMemoryWorkRepository()
         candidate = await repository.create_candidate(first_name="Test", last_name="Candidate")
-        assignment = await repository.create_assignment(title="Task", description="desc")
+        assignment = await repository.create_assignment(
+            title="Task",
+            description="desc",
+            language="en",
+            task_schema=_task_schema(),
+        )
         created = await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -131,7 +155,12 @@ def test_worker_loop_fails_when_lease_is_lost() -> None:
     async def _run() -> None:
         repository = _FailingHeartbeatRepository()
         candidate = await repository.create_candidate(first_name="Test", last_name="Candidate")
-        assignment = await repository.create_assignment(title="Task", description="desc")
+        assignment = await repository.create_assignment(
+            title="Task",
+            description="desc",
+            language="en",
+            task_schema=_task_schema(),
+        )
         await repository.create_submission_with_source(
             candidate_public_id=candidate.candidate_public_id,
             assignment_public_id=assignment.assignment_public_id,
@@ -190,7 +219,7 @@ def test_runner_survives_errors_and_continues() -> None:
                 state=state,
             )
         )
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
         stop_event.set()
         await task
 

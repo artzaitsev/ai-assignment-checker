@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskSchema
 from app.domain.dto import LLMClientRequest, LLMClientResult
 from app.lib.artifacts.types import ExportRowArtifact, NormalizedArtifact
 from app.domain.models import (
@@ -66,7 +67,8 @@ class WorkRepository(Protocol):
         *,
         title: str,
         description: str,
-        criteria_schema_json: dict[str, object] | None = None,
+        language: str,
+        task_schema: TaskSchema,
         is_active: bool = True,
     ) -> AssignmentSnapshot: ...
 
@@ -74,8 +76,10 @@ class WorkRepository(Protocol):
         self,
         *,
         active_only: bool = True,
-        include_criteria: bool = False,
+        include_task_schema: bool = False,
     ) -> list[AssignmentSnapshot]: ...
+
+    async def ensure_no_null_task_schema_rows(self) -> None: ...
 
     async def create_submission_with_source(
         self,
@@ -145,9 +149,9 @@ class WorkRepository(Protocol):
         *,
         submission_id: str,
         score_1_10: int,
-        criteria_scores_json: dict[str, object],
-        organizer_feedback_json: dict[str, object],
-        candidate_feedback_json: dict[str, object],
+        score_breakdown: ScoreBreakdown,
+        organizer_feedback: OrganizerFeedback,
+        candidate_feedback: CandidateFeedback,
         ai_assistance_likelihood: float,
         ai_assistance_confidence: float,
         reproducibility_subset: ReproducibilitySubset,

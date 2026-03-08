@@ -5,6 +5,16 @@ import importlib
 import json
 from typing import Any
 
+from app.domain.evaluation_contracts import (
+    CandidateFeedback,
+    OrganizerFeedback,
+    ScoreBreakdown,
+    TaskSchema,
+    parse_candidate_feedback,
+    parse_organizer_feedback,
+    parse_score_breakdown,
+    parse_task_schema,
+)
 from app.domain.errors import DomainInvariantError
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.ids import new_assignment_public_id, new_candidate_public_id, new_submission_public_id
@@ -265,7 +275,8 @@ class PostgresWorkRepository:
         *,
         title: str,
         description: str,
-        criteria_schema_json: dict[str, object] | None = None,
+        language: str,
+        task_schema: TaskSchema,
         is_active: bool = True,
     ) -> AssignmentSnapshot:
         pool = self._pool()
@@ -278,7 +289,8 @@ class PostgresWorkRepository:
                         assignment_public_id,
                         title,
                         description,
-                        criteria_schema_json,
+                        language,
+                        task_schema.to_dict(),
                         is_active,
                     )
                     if row is None:
@@ -287,7 +299,8 @@ class PostgresWorkRepository:
                         assignment_public_id=row["public_id"],
                         title=row["title"],
                         description=row["description"],
-                        criteria_schema_json=_json_object_or_none(_record_get(row, "criteria_schema_json")),
+                        language=row["language"],
+                        task_schema=_parse_optional_task_schema(_record_get(row, "task_schema")),
                         is_active=row["is_active"],
                     )
                 except Exception as exc:
@@ -300,7 +313,7 @@ class PostgresWorkRepository:
         self,
         *,
         active_only: bool = True,
-        include_criteria: bool = False,
+        include_task_schema: bool = False,
     ) -> list[AssignmentSnapshot]:
         pool = self._pool()
         async with pool.acquire() as conn:
@@ -310,13 +323,19 @@ class PostgresWorkRepository:
                 assignment_public_id=row["public_id"],
                 title=row["title"],
                 description=row["description"],
-                criteria_schema_json=(
-                    _json_object_or_none(_record_get(row, "criteria_schema_json")) if include_criteria else None
-                ),
+                language=row["language"],
+                task_schema=_parse_optional_task_schema(_record_get(row, "task_schema")) if include_task_schema else None,
                 is_active=row["is_active"],
             )
             for row in rows
         ]
+
+    async def ensure_no_null_task_schema_rows(self) -> None:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            null_count = await conn.fetchval("SELECT COUNT(*) FROM assignments WHERE task_schema IS NULL")
+        if isinstance(null_count, int) and null_count > 0:
+            raise DomainInvariantError("rollout blocked: assignments.task_schema contains NULL rows")
 
     async def create_submission_with_source(
         self,
@@ -490,7 +509,7 @@ class PostgresWorkRepository:
         if SubmissionFieldGroup.EVALUATION in include:
             joins.append(
                 "LEFT JOIN LATERAL ("
-                "SELECT score_1_10, criteria_scores_json, organizer_feedback_json, candidate_feedback_json, updated_at "
+                "SELECT score_1_10, score_breakdown, organizer_feedback, candidate_feedback, updated_at "
                 "FROM evaluations e "
                 "WHERE e.submission_id = s.id "
                 "ORDER BY e.updated_at DESC "
@@ -500,9 +519,9 @@ class PostgresWorkRepository:
             select_columns.extend(
                 [
                     "ev.score_1_10",
-                    "ev.criteria_scores_json",
-                    "ev.organizer_feedback_json",
-                    "ev.candidate_feedback_json",
+                    "ev.score_breakdown",
+                    "ev.organizer_feedback",
+                    "ev.candidate_feedback",
                 ]
             )
             joins.append(
@@ -604,9 +623,9 @@ class PostgresWorkRepository:
                 else None,
                 evaluation=SubmissionListItem.Evaluation(
                     score_1_10=_as_int(_record_get(row, "score_1_10")),
-                    criteria_scores_json=_json_object_or_none(_record_get(row, "criteria_scores_json")),
-                    organizer_feedback_json=_json_object_or_none(_record_get(row, "organizer_feedback_json")),
-                    candidate_feedback_json=_json_object_or_none(_record_get(row, "candidate_feedback_json")),
+                    score_breakdown=_parse_optional_score_breakdown(_record_get(row, "score_breakdown")),
+                    organizer_feedback=_parse_optional_organizer_feedback(_record_get(row, "organizer_feedback")),
+                    candidate_feedback=_parse_optional_candidate_feedback(_record_get(row, "candidate_feedback")),
                     chain_version=_as_str(_record_get(row, "chain_version")),
                     model=_as_str(_record_get(row, "model")),
                     spec_version=_as_str(_record_get(row, "spec_version")),
@@ -738,26 +757,23 @@ class PostgresWorkRepository:
         *,
         submission_id: str,
         score_1_10: int,
-        criteria_scores_json: dict[str, object],
-        organizer_feedback_json: dict[str, object],
-        candidate_feedback_json: dict[str, object],
+        score_breakdown,
+        organizer_feedback,
+        candidate_feedback,
         ai_assistance_likelihood: float,
         ai_assistance_confidence: float,
         reproducibility_subset: dict[str, str],
     ) -> None:
-        criteria_payload = dict(criteria_scores_json)
-        # Keep version trace co-located with evaluation payload for quick reads
-        # in delivery/export paths.
-        criteria_payload["_reproducibility"] = dict(reproducibility_subset)
+        score_payload = score_breakdown.with_reproducibility(reproducibility_subset).to_dict()
         pool = self._pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 SQL_INSERT_EVALUATION,
                 submission_id,
                 score_1_10,
-                criteria_payload,
-                organizer_feedback_json,
-                candidate_feedback_json,
+                score_payload,
+                organizer_feedback.to_dict(),
+                candidate_feedback.to_dict(),
                 ai_assistance_likelihood,
                 ai_assistance_confidence,
             )
@@ -924,3 +940,31 @@ def _json_object_or_none(value: object | None) -> dict[str, object] | None:
     if value is None:
         return None
     return _json_object(value)
+
+
+def _parse_optional_task_schema(value: object | None) -> TaskSchema | None:
+    payload = _json_object_or_none(value)
+    if payload is None:
+        return None
+    return parse_task_schema(payload)
+
+
+def _parse_optional_score_breakdown(value: object | None) -> ScoreBreakdown | None:
+    payload = _json_object_or_none(value)
+    if payload is None:
+        return None
+    return parse_score_breakdown(payload)
+
+
+def _parse_optional_organizer_feedback(value: object | None) -> OrganizerFeedback | None:
+    payload = _json_object_or_none(value)
+    if payload is None:
+        return None
+    return parse_organizer_feedback(payload)
+
+
+def _parse_optional_candidate_feedback(value: object | None) -> CandidateFeedback | None:
+    payload = _json_object_or_none(value)
+    if payload is None:
+        return None
+    return parse_candidate_feedback(payload)

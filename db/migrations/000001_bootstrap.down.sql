@@ -1,6 +1,7 @@
 DROP TABLE IF EXISTS deliveries;
 DROP TABLE IF EXISTS llm_runs;
 DROP TABLE IF EXISTS evaluations;
+DROP TABLE IF EXISTS worker_checkpoints;
 DROP TABLE IF EXISTS artifacts;
 DROP TABLE IF EXISTS submission_sources;
 DROP TABLE IF EXISTS submissions;

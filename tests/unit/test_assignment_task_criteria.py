@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.domain.assignment_criteria import parse_assignment_criteria_schema
+from app.domain.evaluation_contracts import (
+    CandidateFeedback,
+    OrganizerFeedback,
+    ScoreBreakdown,
+    TaskScoreBreakdown,
+    CriterionScore,
+    parse_task_schema,
+)
 from app.domain.dto import EvaluateSubmissionCommand, LLMClientResult, PrepareExportCommand
 from app.domain.evaluation_chain import load_chain_spec
 from app.domain.models import SubmissionListItem
@@ -80,7 +87,7 @@ def test_criteria_schema_validation_rejects_non_normalized_weights() -> None:
     assert isinstance(first_task, dict)
     first_task["weight"] = 0.7
     with pytest.raises(ValueError, match="tasks weights"):
-        parse_assignment_criteria_schema(invalid)
+        parse_task_schema(invalid)
 
 
 @pytest.mark.unit
@@ -98,14 +105,16 @@ def test_multitask_evaluate_produces_deterministic_task_and_overall_scores() -> 
             ),
             assignment_title="Multitask",
             assignment_description="Synthetic",
-            criteria_schema_json=_valid_schema(),
+            assignment_language="en",
+            task_schema=parse_task_schema(_valid_schema()),
             chain_spec=chain,
+            effective_model="model:test",
         ),
         llm=_MultitaskLLM(),
     )
 
-    assert result.criteria_scores_json["task_order"] == ["task_1", "task_2"]
-    assert result.criteria_scores_json["task_scores"] == {"task_1": 8, "task_2": 9}
+    assert result.score_breakdown.task_order() == ["task_1", "task_2"]
+    assert result.score_breakdown.task_scores() == {"task_1": 8, "task_2": 9}
     assert result.score_1_10 == 8
 
 
@@ -119,13 +128,40 @@ def test_task_scores_summary_format_is_stable_and_ascii() -> None:
         assignment=SubmissionListItem.Assignment(public_id="asg_1"),
         evaluation=SubmissionListItem.Evaluation(
             score_1_10=8,
-            criteria_scores_json={
-                "items": [],
-                "task_order": ["task_1", "task_2"],
-                "task_scores": {"task_1": 7, "task_2": 9},
-            },
-            organizer_feedback_json={"strengths": [], "issues": [], "recommendations": []},
-            candidate_feedback_json={"summary": "ok", "what_went_well": [], "what_to_improve": []},
+            score_breakdown=ScoreBreakdown(
+                schema_version="task-criteria:v1",
+                tasks=(
+                    TaskScoreBreakdown(
+                        task_id="task_1",
+                        score_1_10=7,
+                        weight=0.6,
+                        criteria=(
+                            CriterionScore(
+                                criterion_id="correctness",
+                                score=7,
+                                reason="ok",
+                                weight=1.0,
+                            ),
+                        ),
+                    ),
+                    TaskScoreBreakdown(
+                        task_id="task_2",
+                        score_1_10=9,
+                        weight=0.4,
+                        criteria=(
+                            CriterionScore(
+                                criterion_id="coverage",
+                                score=9,
+                                reason="strong",
+                                weight=1.0,
+                            ),
+                        ),
+                    ),
+                ),
+                overall_score_1_10_derived=8,
+            ),
+            organizer_feedback=OrganizerFeedback(strengths=(), issues=(), recommendations=()),
+            candidate_feedback=CandidateFeedback(summary="ok", what_went_well=(), what_to_improve=()),
             chain_version="chain:v1",
             model="model:v1",
             spec_version="chain-spec:v1",
