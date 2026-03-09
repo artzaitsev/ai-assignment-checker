@@ -18,6 +18,7 @@ def test_canonical_error_codes_are_enforced() -> None:
 def test_stage_error_mapping_restricts_invalid_codes() -> None:
     assert resolve_stage_error(stage="normalized", code="schema_validation_failed") == "schema_validation_failed"
     assert resolve_stage_error(stage="normalized", code="file_parse_failed") == "file_parse_failed"
+    assert resolve_stage_error(stage="normalized", code="llm_provider_unavailable") == "llm_provider_unavailable"
     assert resolve_stage_error(stage="normalized", code="delivery_transport_failed") == "internal_error"
 
 

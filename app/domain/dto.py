@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Mapping
 from typing import Literal
 
 from app.domain.evaluation_contracts import (
@@ -90,10 +91,36 @@ class OfficeExtractionResult:
 
 
 @dataclass(frozen=True)
+class PdfPageExtractionResult:
+    page_index: int
+    native_text: str
+    merged_text: str
+    native_char_count: int
+    ocr_candidate: bool
+    ocr_reason_flags: tuple[str, ...]
+    used_ocr_text: bool
+
+
+@dataclass(frozen=True)
+class PdfExtractionResult:
+    total_pages: int
+    processed_pages: int
+    pages: tuple[PdfPageExtractionResult, ...]
+    ocr_candidate_page_indexes: tuple[int, ...]
+    bounded: bool
+    bounded_reason: str | None
+    outcome: Literal["native_complete", "ocr_partial", "bounded"]
+
+
+PdfOCRProvider = Callable[[bytes, tuple[int, ...]], Mapping[int, str]]
+
+
+@dataclass(frozen=True)
 class NormalizePayloadResult:
     normalized_artifact: NormalizedArtifact
     schema_version: str
     office_extraction: OfficeExtractionResult | None = None
+    pdf_extraction: PdfExtractionResult | None = None
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+from app.clients.llm import LLMAdapterError, LLMRetryableError
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
 from app.domain.dto import NormalizePayloadCommand, NormalizationTaskInput
 from app.domain.models import ProcessResult, WorkItemClaim
@@ -15,7 +18,7 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     try:
         raw_artifact_ref = await deps.repository.get_artifact_ref(item_id=claim.item_id, stage="raw")
         raw_storage_key = storage_key_from_ref(raw_artifact_ref)
-        raw_payload = deps.storage.get_bytes(key=raw_storage_key)
+        raw_payload = await asyncio.to_thread(deps.storage.get_bytes, key=raw_storage_key)
         filename = raw_storage_key.rsplit("/", maxsplit=1)[-1]
 
         submission = await deps.repository.get_submission(submission_id=claim.item_id)
@@ -31,7 +34,8 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             NormalizationTaskInput(task_id=task.task_id, task_index=index, task_text=task.title)
             for index, task in enumerate(assignment.task_schema.tasks, start=1)
         )
-        result = normalize_payload(
+        result = await asyncio.to_thread(
+            normalize_payload,
             NormalizePayloadCommand(
                 submission_id=claim.item_id,
                 artifact_ref=raw_artifact_ref,
@@ -67,13 +71,31 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             error_code=error_code,
             retry_classification=classify_error(error_code),
         )
+    except LLMRetryableError as exc:
+        error_code = resolve_stage_error(stage="normalized", code="llm_provider_unavailable")
+        return ProcessResult(
+            success=False,
+            detail=str(exc),
+            error_code=error_code,
+            retry_classification=classify_error(error_code),
+        )
+    except LLMAdapterError as exc:
+        error_code = resolve_stage_error(stage="normalized", code="validation_error")
+        return ProcessResult(
+            success=False,
+            detail=str(exc),
+            error_code=error_code,
+            retry_classification=classify_error(error_code),
+        )
 
+    artifact_ref = await asyncio.to_thread(
+        deps.artifact_repository.save_normalized,
+        submission_id=claim.item_id,
+        artifact=result.normalized_artifact,
+    )
     return ProcessResult(
         success=True,
         detail="normalize artifact contract satisfied",
-        artifact_ref=deps.artifact_repository.save_normalized(
-            submission_id=claim.item_id,
-            artifact=result.normalized_artifact,
-        ),
+        artifact_ref=artifact_ref,
         artifact_version=result.schema_version,
     )

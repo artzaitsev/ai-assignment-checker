@@ -148,7 +148,7 @@ def test_skeleton_api_endpoints_are_available() -> None:
     assert create_response.status_code == 200
     assert create_response.json()["submission_id"].startswith("sub_")
     assert status_response.status_code == 200
-    assert status_response.json()["state"] == "uploaded"
+    assert status_response.json()["state"] == "evaluated"
     assert status_response.json()["candidate_public_id"] == candidate_public_id
     assert status_response.json()["assignment_public_id"] == assignment_public_id
     assert assignments_response.status_code == 200

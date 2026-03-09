@@ -60,6 +60,7 @@ STAGE_ERROR_MAP: Mapping[str, frozenset[ErrorCode]] = {
             "unsupported_format",
             "file_parse_failed",
             "artifact_missing",
+            "llm_provider_unavailable",
             "schema_validation_failed",
             "validation_error",
             "internal_error",

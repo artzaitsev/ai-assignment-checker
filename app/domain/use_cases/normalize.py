@@ -5,16 +5,21 @@ import json
 import logging
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from typing import Literal
 from zipfile import BadZipFile, ZipFile
 
 from pydantic import ValidationError
+from pypdf import PdfReader
 
 from app.domain.contracts import LLMClient
 from app.domain.dto import (
     LLMClientRequest,
     NormalizePayloadCommand,
     NormalizePayloadResult,
+    PdfExtractionResult,
+    PdfOCRProvider,
+    PdfPageExtractionResult,
     NormalizationParserInput,
     NormalizationParserOutput,
     NormalizationTaskSolution,
@@ -48,6 +53,15 @@ _DOCX_PICT_TAG = "{urn:schemas-microsoft-com:vml}shape"
 _ODT_IMAGE_TAG = "{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}image"
 _SUPPORTED_OFFICE_FORMATS = {"docx", "odt"}
 _PARSE_FAILED_MESSAGE = "Supported file format could not be parsed."
+_PDF_MIME_HINTS = {
+    "application/pdf",
+    "application/x-pdf",
+}
+_PDF_MAX_PAGES = 64
+_PDF_MAX_CHARS = 120_000
+_PDF_MIN_PAGE_TEXT_CHARS = 48
+_PDF_MIN_TOTAL_TEXT_CHARS = 80
+_PDF_PAGE_DELIMITER_TEMPLATE = "\n\n--- page {page} ---\n\n"
 _NORMALIZATION_PARSER_SYSTEM_PROMPT = "NORMALIZATION_PARSER: return strict JSON with task_solutions[] and unmapped_text"
 _NORMALIZATION_REPAIR_SYSTEM_PROMPT = (
     "NORMALIZATION_PARSER_REPAIR: return strict JSON object with task_solutions[] only; "
@@ -55,7 +69,12 @@ _NORMALIZATION_REPAIR_SYSTEM_PROMPT = (
 )
 
 
-def normalize_payload(cmd: NormalizePayloadCommand, *, llm: LLMClient) -> NormalizePayloadResult:
+def normalize_payload(
+    cmd: NormalizePayloadCommand,
+    *,
+    llm: LLMClient,
+    pdf_ocr_provider: PdfOCRProvider | None = None,
+) -> NormalizePayloadResult:
     """Build normalized:v2 artifact for supported plain-text and office submissions."""
     source_kind = _detect_submission_kind(
         filename=cmd.filename,
@@ -64,11 +83,16 @@ def normalize_payload(cmd: NormalizePayloadCommand, *, llm: LLMClient) -> Normal
     )
 
     office_extraction: OfficeExtractionResult | None = None
+    pdf_extraction: PdfExtractionResult | None = None
+    submission_text: str
     if source_kind == "plain_text":
         submission_text = _normalize_submission_text(_decode_plain_text(cmd.raw_payload))
-    else:
+    elif source_kind == "docx" or source_kind == "odt":
         office_extraction = _extract_office_document(payload=cmd.raw_payload, file_format=source_kind)
         submission_text = office_extraction.submission_text
+    else:
+        pdf_extraction = _extract_pdf_submission(payload=cmd.raw_payload, pdf_ocr_provider=pdf_ocr_provider)
+        submission_text = _assemble_pdf_submission_text(pdf_extraction.pages)
 
     parser_input = NormalizationParserInput(
         assignment_public_id=cmd.assignment_public_id,
@@ -95,13 +119,17 @@ def normalize_payload(cmd: NormalizePayloadCommand, *, llm: LLMClient) -> Normal
         normalized_artifact=normalized_artifact,
         schema_version="normalized:v2",
         office_extraction=office_extraction,
+        pdf_extraction=pdf_extraction,
     )
 
 
-def _detect_submission_kind(*, filename: str, persisted_mime: str | None, payload: bytes) -> Literal["plain_text", "docx", "odt"]:
+def _detect_submission_kind(*, filename: str, persisted_mime: str | None, payload: bytes) -> Literal["plain_text", "docx", "odt", "pdf"]:
     signature_kind = _sniff_office_package_format(payload)
     if signature_kind is not None:
         return signature_kind
+
+    if _is_pdf_payload(filename=filename, persisted_mime=persisted_mime, payload=payload):
+        return "pdf"
 
     office_hint = _office_format_from_extension(filename) or _office_format_from_mime(persisted_mime)
     if office_hint is not None and payload.startswith(b"PK"):
@@ -110,6 +138,17 @@ def _detect_submission_kind(*, filename: str, persisted_mime: str | None, payloa
     if _is_supported_plain_text(filename=filename, persisted_mime=persisted_mime, payload=payload):
         return "plain_text"
     raise ValueError("unsupported submission format")
+
+
+def _is_pdf_payload(*, filename: str, persisted_mime: str | None, payload: bytes) -> bool:
+    if payload.startswith(b"%PDF"):
+        return True
+    normalized_name = filename.strip().lower()
+    if normalized_name.endswith(".pdf"):
+        return True
+    if isinstance(persisted_mime, str) and persisted_mime.strip().lower() in _PDF_MIME_HINTS:
+        return True
+    return False
 
 
 def _is_supported_plain_text(*, filename: str, persisted_mime: str | None, payload: bytes) -> bool:
@@ -197,6 +236,190 @@ def _normalize_submission_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = normalized.lstrip("\ufeff")
     return normalized.strip(" \t\n")
+
+
+def _extract_pdf_submission(*, payload: bytes, pdf_ocr_provider: PdfOCRProvider | None) -> PdfExtractionResult:
+    try:
+        reader = PdfReader(io.BytesIO(payload), strict=False)
+    except Exception as exc:  # pragma: no cover - parser exception types vary by backend
+        raise ValueError(_PARSE_FAILED_MESSAGE) from exc
+
+    total_pages = len(reader.pages)
+    if total_pages == 0:
+        raise ValueError(_PARSE_FAILED_MESSAGE)
+
+    processed_pages = min(total_pages, _PDF_MAX_PAGES)
+    bounded_reason: str | None = None
+    if total_pages > processed_pages:
+        bounded_reason = "page_limit"
+
+    page_results: list[PdfPageExtractionResult] = []
+    ocr_candidate_page_indexes: list[int] = []
+    for page_index in range(1, processed_pages + 1):
+        page = reader.pages[page_index - 1]
+        reason_flags: list[str] = []
+        extraction_text = ""
+        try:
+            extraction_text = page.extract_text() or ""
+        except Exception:
+            reason_flags.append("extraction_error")
+
+        native_text = _normalize_pdf_page_text(extraction_text)
+        native_char_count = len(native_text)
+        if native_char_count == 0:
+            reason_flags.append("empty_native_text")
+        elif native_char_count < _PDF_MIN_PAGE_TEXT_CHARS:
+            reason_flags.append("low_text_density")
+        if _pdf_page_contains_image(page) and native_char_count < 900:
+            reason_flags.append("embedded_image")
+
+        ocr_candidate = bool(reason_flags)
+        if ocr_candidate:
+            ocr_candidate_page_indexes.append(page_index)
+
+        page_results.append(
+            PdfPageExtractionResult(
+                page_index=page_index,
+                native_text=native_text,
+                merged_text=native_text,
+                native_char_count=native_char_count,
+                ocr_candidate=ocr_candidate,
+                ocr_reason_flags=tuple(reason_flags),
+                used_ocr_text=False,
+            )
+        )
+
+    if ocr_candidate_page_indexes and pdf_ocr_provider is not None:
+        ocr_payload = _coerce_pdf_ocr_payload(
+            payload=pdf_ocr_provider(payload, tuple(ocr_candidate_page_indexes)),
+            allowed_page_indexes=tuple(ocr_candidate_page_indexes),
+        )
+        if ocr_payload:
+            merged_pages: list[PdfPageExtractionResult] = []
+            for page in page_results:
+                ocr_text = ocr_payload.get(page.page_index)
+                if ocr_text:
+                    merged_text = _merge_native_and_ocr_text(native_text=page.native_text, ocr_text=ocr_text)
+                    merged_pages.append(
+                        PdfPageExtractionResult(
+                            page_index=page.page_index,
+                            native_text=page.native_text,
+                            merged_text=merged_text,
+                            native_char_count=page.native_char_count,
+                            ocr_candidate=page.ocr_candidate,
+                            ocr_reason_flags=page.ocr_reason_flags,
+                            used_ocr_text=True,
+                        )
+                    )
+                else:
+                    merged_pages.append(page)
+            page_results = merged_pages
+
+    submission_text = _assemble_pdf_submission_text(tuple(page_results))
+    if len(submission_text) > _PDF_MAX_CHARS:
+        submission_text = submission_text[:_PDF_MAX_CHARS].rstrip()
+        bounded_reason = bounded_reason or "char_limit"
+
+    effective_total_chars = len(submission_text)
+    if effective_total_chars < _PDF_MIN_TOTAL_TEXT_CHARS:
+        raise ValueError("PDF extraction produced sparse text; OCR required")
+
+    final_pages = _apply_submission_text_to_pages(page_results=tuple(page_results), submission_text=submission_text)
+    used_ocr = any(page.used_ocr_text for page in final_pages)
+    outcome: Literal["native_complete", "ocr_partial", "bounded"] = "native_complete"
+    if bounded_reason is not None:
+        outcome = "bounded"
+    elif used_ocr:
+        outcome = "ocr_partial"
+
+    return PdfExtractionResult(
+        total_pages=total_pages,
+        processed_pages=processed_pages,
+        pages=final_pages,
+        ocr_candidate_page_indexes=tuple(ocr_candidate_page_indexes),
+        bounded=bounded_reason is not None,
+        bounded_reason=bounded_reason,
+        outcome=outcome,
+    )
+
+
+def _normalize_pdf_page_text(text: str) -> str:
+    lines = [_normalize_inline_text(line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _pdf_page_contains_image(page: object) -> bool:
+    try:
+        resources = getattr(page, "get", lambda _: None)("/Resources")
+        if resources is None:
+            return False
+        xobjects = resources.get("/XObject") if hasattr(resources, "get") else None
+        if not xobjects:
+            return False
+        for _, obj in xobjects.items():
+            resolved = obj.get_object() if hasattr(obj, "get_object") else obj
+            if hasattr(resolved, "get") and resolved.get("/Subtype") == "/Image":
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _coerce_pdf_ocr_payload(*, payload: Mapping[int, str] | Mapping[object, object], allowed_page_indexes: tuple[int, ...]) -> dict[int, str]:
+    allowed = set(allowed_page_indexes)
+    sanitized: dict[int, str] = {}
+    for page_key, page_text in payload.items():
+        if not isinstance(page_key, int) or page_key not in allowed:
+            continue
+        if not isinstance(page_text, str):
+            continue
+        normalized_text = _normalize_pdf_page_text(page_text)
+        if not normalized_text:
+            continue
+        sanitized[page_key] = normalized_text
+    return sanitized
+
+
+def _merge_native_and_ocr_text(*, native_text: str, ocr_text: str) -> str:
+    if not native_text:
+        return ocr_text
+    return _normalize_submission_text(f"{native_text}\n{ocr_text}")
+
+
+def _assemble_pdf_submission_text(pages: tuple[PdfPageExtractionResult, ...]) -> str:
+    if not pages:
+        return ""
+    include_page_delimiters = len(pages) > 1
+    chunks: list[str] = []
+    for page in pages:
+        page_text = _normalize_submission_text(page.merged_text)
+        if not page_text:
+            continue
+        if include_page_delimiters:
+            chunks.append(_PDF_PAGE_DELIMITER_TEMPLATE.format(page=page.page_index).strip("\n"))
+        chunks.append(page_text)
+    return _normalize_submission_text("\n\n".join(chunks))
+
+
+def _apply_submission_text_to_pages(
+    *, page_results: tuple[PdfPageExtractionResult, ...], submission_text: str
+) -> tuple[PdfPageExtractionResult, ...]:
+    if not page_results:
+        return page_results
+    if submission_text:
+        return page_results
+    return tuple(
+        PdfPageExtractionResult(
+            page_index=page.page_index,
+            native_text=page.native_text,
+            merged_text="",
+            native_char_count=page.native_char_count,
+            ocr_candidate=page.ocr_candidate,
+            ocr_reason_flags=page.ocr_reason_flags,
+            used_ocr_text=page.used_ocr_text,
+        )
+        for page in page_results
+    )
 
 
 def _extract_office_document(*, payload: bytes, file_format: Literal["docx", "odt"]) -> OfficeExtractionResult:

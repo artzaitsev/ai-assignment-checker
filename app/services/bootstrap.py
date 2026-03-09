@@ -149,5 +149,8 @@ def _build_llm_client(*, role: RuntimeRole, integration_mode: str) -> LLMClient:
             api_key=llm_settings.api_key,
             base_url=llm_settings.base_url,
             model=llm_settings.model,
+            request_timeout_seconds=llm_settings.request_timeout_seconds,
+            request_max_retries=llm_settings.request_max_retries,
+            request_retry_backoff_ms=llm_settings.request_retry_backoff_ms,
         )
     return StubLLMClient()

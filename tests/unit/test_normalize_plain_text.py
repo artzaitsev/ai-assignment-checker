@@ -8,6 +8,7 @@ from typing import Mapping
 import pytest
 
 from app.domain.dto import LLMClientResult, NormalizePayloadCommand, NormalizationTaskInput
+from app.domain.use_cases import normalize as normalize_module
 from app.domain.use_cases.normalize import normalize_payload
 
 
@@ -43,6 +44,22 @@ class _SequencedParserLLM:
         return LLMClientResult(
             raw_text=json.dumps(payload, ensure_ascii=False),
             raw_json=dict(payload),
+            tokens_input=1,
+            tokens_output=1,
+            latency_ms=1,
+        )
+
+
+class _TrackingParserLLM:
+    def __init__(self, raw_json: Mapping[str, object]) -> None:
+        self.raw_json = raw_json
+        self.requests: list[object] = []
+
+    def evaluate(self, request: object) -> LLMClientResult:
+        self.requests.append(request)
+        return LLMClientResult(
+            raw_text=json.dumps(self.raw_json, ensure_ascii=False),
+            raw_json=dict(self.raw_json),
             tokens_input=1,
             tokens_output=1,
             latency_ms=1,
@@ -361,3 +378,159 @@ def test_normalize_payload_fails_deterministically_for_corrupt_office_package() 
             _command(payload=payload, filename="input.docx", persisted_mime="application/octet-stream"),
             llm=_ParserLLM(parser_output),
         )
+
+
+@pytest.mark.unit
+def test_normalize_payload_extracts_native_pdf_text_without_ocr() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_009_pdf_native_text" / "input.pdf").read_bytes()
+    result = normalize_payload(
+        _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+        llm=_ParserLLM(parser_output),
+    )
+    assert result.pdf_extraction is not None
+    assert result.pdf_extraction.total_pages >= 1
+    assert result.pdf_extraction.outcome in {"native_complete", "bounded"}
+    assert "SQL debug assignment - PDF export" in result.normalized_artifact.submission_text
+    assert result.normalized_artifact.schema_version == "normalized:v2"
+
+
+@pytest.mark.unit
+def test_normalize_payload_merges_pdf_ocr_candidate_pages_deterministically() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_010_pdf_mixed_native_and_scanned" / "input.pdf").read_bytes()
+    ocr_text = json.loads(
+        (NORMALIZATION_CASES_DIR / "case_010_pdf_mixed_native_and_scanned" / "ocr_stub.json").read_text(encoding="utf-8")
+    )["text"]
+
+    def _ocr_provider(_: bytes, page_indexes: tuple[int, ...]) -> dict[int, str]:
+        return {page_index: str(ocr_text) for page_index in page_indexes}
+
+    result = normalize_payload(
+        _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+        llm=_ParserLLM(parser_output),
+        pdf_ocr_provider=_ocr_provider,
+    )
+    assert result.pdf_extraction is not None
+    assert result.pdf_extraction.ocr_candidate_page_indexes
+    assert any(page.used_ocr_text for page in result.pdf_extraction.pages)
+    assert "Scanned addendum. Photo fragment." in result.normalized_artifact.submission_text
+
+
+@pytest.mark.unit
+def test_normalize_payload_requires_ocr_for_sparse_pdf_without_provider() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_011_ocr_heavy_submission" / "input.pdf").read_bytes()
+    with pytest.raises(ValueError, match="OCR required"):
+        normalize_payload(
+            _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+            llm=_ParserLLM(parser_output),
+        )
+
+
+@pytest.mark.unit
+def test_normalize_payload_accepts_sparse_pdf_with_deterministic_ocr_stub() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_011_ocr_heavy_submission" / "input.pdf").read_bytes()
+    ocr_text = json.loads(
+        (NORMALIZATION_CASES_DIR / "case_011_ocr_heavy_submission" / "ocr_stub.json").read_text(encoding="utf-8")
+    )["text"]
+
+    def _ocr_provider(_: bytes, page_indexes: tuple[int, ...]) -> dict[int, str]:
+        return {page_index: str(ocr_text) for page_index in page_indexes}
+
+    result = normalize_payload(
+        _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+        llm=_ParserLLM(parser_output),
+        pdf_ocr_provider=_ocr_provider,
+    )
+    assert result.pdf_extraction is not None
+    assert result.pdf_extraction.outcome == "ocr_partial"
+    assert "Forwarded screenshot." in result.normalized_artifact.submission_text
+    assert result.normalized_artifact.schema_version == "normalized:v2"
+
+
+@pytest.mark.unit
+def test_normalize_payload_fails_deterministically_for_corrupt_pdf() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_012_corrupt_supported_file" / "input.pdf").read_bytes()
+    with pytest.raises(ValueError, match="Supported file format could not be parsed"):
+        normalize_payload(
+            _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+            llm=_ParserLLM(parser_output),
+        )
+
+
+@pytest.mark.unit
+def test_normalize_payload_uses_shared_parser_contract_for_pdf_submission_text() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    llm = _TrackingParserLLM(parser_output)
+    payload = (NORMALIZATION_CASES_DIR / "case_009_pdf_native_text" / "input.pdf").read_bytes()
+    result = normalize_payload(
+        _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+        llm=llm,
+    )
+    assert result.normalized_artifact.schema_version == "normalized:v2"
+    request = llm.requests[0]
+    user_prompt = json.loads(getattr(request, "user_prompt"))
+    assert user_prompt["assignment_public_id"] == "asg_test"
+    assert isinstance(user_prompt["assignment_tasks"], list)
+    assert "submission_text" in user_prompt
+    assert "raw_payload" not in user_prompt
+
+
+@pytest.mark.unit
+def test_normalize_payload_records_bounded_pdf_outcome_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_009_pdf_native_text" / "input.pdf").read_bytes()
+    monkeypatch.setattr(normalize_module, "_PDF_MAX_CHARS", 80)
+    result = normalize_payload(
+        _command(payload=payload, filename="input.pdf", persisted_mime="application/pdf"),
+        llm=_ParserLLM(parser_output),
+    )
+    assert result.pdf_extraction is not None
+    assert result.pdf_extraction.bounded is True
+    assert result.pdf_extraction.bounded_reason == "char_limit"
+    assert result.pdf_extraction.outcome == "bounded"

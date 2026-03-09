@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.domain.evaluation_contracts import parse_task_schema
+from app.domain.dto import LLMClientResult, NormalizePayloadCommand, NormalizationTaskInput
+from app.domain.use_cases.normalize import normalize_payload
 from app.lib.artifacts.types import NormalizedArtifact
 from app.domain.models import WorkItemClaim
 from app.lib.artifacts import build_artifact_repository
@@ -16,6 +20,21 @@ from app.workers.handlers.deps import WorkerDeps
 
 
 CASES_DIR = Path("tests/data/normalization/cases")
+
+
+@dataclass(frozen=True)
+class _ParserLLM:
+    raw_json: dict[str, object]
+
+    def evaluate(self, request: object) -> LLMClientResult:
+        del request
+        return LLMClientResult(
+            raw_text=json.dumps(self.raw_json, ensure_ascii=False),
+            raw_json=dict(self.raw_json),
+            tokens_input=1,
+            tokens_output=1,
+            latency_ms=1,
+        )
 
 
 def _task_schema() -> dict[str, object]:
@@ -147,3 +166,57 @@ def test_parser_backed_office_normalization_accepts_misnamed_docx_by_signature()
     )
     assert artifact.schema_version == "normalized:v2"
     assert "Database review submission" in artifact.submission_text
+
+
+@pytest.mark.integration
+def test_parser_backed_pdf_normalization_persists_normalized_v2_for_native_text_case() -> None:
+    artifact, _ = asyncio.run(
+        _run_case(
+            case_name="case_009_pdf_native_text",
+            input_name="input.pdf",
+        )
+    )
+    assert artifact.schema_version == "normalized:v2"
+    assert "SQL debug assignment - PDF export" in artifact.submission_text
+    assert artifact.task_solutions
+
+
+@pytest.mark.integration
+def test_parser_backed_pdf_normalization_merges_ocr_stub_text_before_parser() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "answer-1"},
+            {"task_id": "task_2", "answer": "answer-2"},
+        ],
+        "unmapped_text": "",
+    }
+    case_dir = CASES_DIR / "case_010_pdf_mixed_native_and_scanned"
+    payload = (case_dir / "input.pdf").read_bytes()
+    ocr_text = json.loads((case_dir / "ocr_stub.json").read_text(encoding="utf-8"))["text"]
+
+    def _ocr_provider(_: bytes, page_indexes: tuple[int, ...]) -> dict[int, str]:
+        return {page_index: str(ocr_text) for page_index in page_indexes}
+
+    result = normalize_payload(
+        NormalizePayloadCommand(
+            submission_id="sub_case_010",
+            artifact_ref="raw/sub_case_010/input.pdf",
+            filename="input.pdf",
+            source_type="api_upload",
+            persisted_mime="application/pdf",
+            raw_payload=payload,
+            assignment_public_id="asg_test",
+            assignment_language="en",
+            assignment_tasks=(
+                NormalizationTaskInput(task_id="task_1", task_index=1, task_text="Task 1"),
+                NormalizationTaskInput(task_id="task_2", task_index=2, task_text="Task 2"),
+            ),
+        ),
+        llm=_ParserLLM(parser_output),
+        pdf_ocr_provider=_ocr_provider,
+    )
+
+    assert result.normalized_artifact.schema_version == "normalized:v2"
+    assert "Scanned addendum. Photo fragment." in result.normalized_artifact.submission_text
+    assert result.pdf_extraction is not None
+    assert any(page.used_ocr_text for page in result.pdf_extraction.pages)

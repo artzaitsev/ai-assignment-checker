@@ -3,7 +3,8 @@ import asyncio
 import pytest
 
 from app.api.handlers import assignments, candidates, exports, feedback, status, submissions
-from app.api.handlers.deps import ApiDeps
+from app.api.handlers.deps import ApiDeps, SubmissionRecord
+from app.clients.llm import LLMRetryableError
 from app.api.handlers.pipeline import run_test_pipeline_handler
 from app.clients.stub import StubLLMClient, StubStorageClient, StubTelegramClient
 from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
@@ -556,6 +557,91 @@ def test_synthetic_pipeline_handler_returns_none_for_missing_submission() -> Non
 
 
 @pytest.mark.unit
+def test_status_handler_prefers_repository_state_over_stale_uploaded_trace() -> None:
+    storage = StubStorageClient()
+    repository = InMemoryWorkRepository()
+    deps = ApiDeps(
+        repository=repository,
+        artifact_repository=build_artifact_repository(storage=storage),
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=StubLLMClient(),
+        submissions={},
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="S", last_name="T")
+        assignment = await repository.create_assignment(title="A", description="D", language="en", task_schema=_task_schema())
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="status-stale",
+            initial_status="uploaded",
+        )
+        submission_id = created.submission_id
+        deps.submissions[submission_id] = SubmissionRecord(
+            submission_id=submission_id,
+            state="uploaded",
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            transitions=["uploaded"],
+            artifacts={},
+        )
+
+        await repository.transition_state(item_id=submission_id, from_state="uploaded", to_state="normalization_in_progress")
+        await repository.transition_state(item_id=submission_id, from_state="normalization_in_progress", to_state="normalized")
+
+        payload = await status.get_submission_status_with_trace_handler(deps, submission_id=submission_id)
+        assert payload is not None
+        assert payload.state == "normalized"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_status_handler_keeps_in_memory_pipeline_state_when_ahead_of_repository() -> None:
+    storage = StubStorageClient()
+    repository = InMemoryWorkRepository()
+    deps = ApiDeps(
+        repository=repository,
+        artifact_repository=build_artifact_repository(storage=storage),
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=StubLLMClient(),
+        submissions={},
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="S", last_name="T")
+        assignment = await repository.create_assignment(title="A", description="D", language="en", task_schema=_task_schema())
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="status-pipeline",
+            initial_status="uploaded",
+        )
+        submission_id = created.submission_id
+        deps.submissions[submission_id] = SubmissionRecord(
+            submission_id=submission_id,
+            state="failed_evaluation",
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            transitions=["uploaded", "normalization_in_progress", "normalized", "evaluation_in_progress", "failed_evaluation"],
+            artifacts={"raw": f"raw/{submission_id}/task.txt"},
+        )
+
+        payload = await status.get_submission_status_with_trace_handler(deps, submission_id=submission_id)
+        assert payload is not None
+        assert payload.state == "failed_evaluation"
+        assert payload.transitions is not None
+        assert payload.transitions[-1] == "failed_evaluation"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
 def test_normalize_handler_returns_artifact_missing_without_raw_link() -> None:
     storage = StubStorageClient()
     artifact_repository = build_artifact_repository(storage=storage)
@@ -623,6 +709,61 @@ def test_normalize_handler_uses_linked_raw_artifact_ref() -> None:
         )
         assert result.success is True
         assert result.artifact_ref == f"normalized/{submission_id}.json"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_normalize_handler_maps_llm_retryable_errors_as_recoverable() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+
+    class _RetryableLLM:
+        def evaluate(self, request: object):
+            del request
+            raise LLMRetryableError("temporary provider timeout")
+
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=_RetryableLLM(),
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="N", last_name="R")
+        assignment = await repository.create_assignment(
+            title="Normalize",
+            description="Normalize plain text",
+            language="en",
+            task_schema=_task_schema(),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="norm-llm-retryable",
+            initial_status="uploaded",
+            metadata_json={"filename": "task.txt"},
+        )
+        submission_id = created.submission_id
+        raw_ref = storage.put_bytes(key=f"raw/{submission_id}/task.txt", payload=b"print('hello')")
+        await repository.link_artifact(
+            item_id=submission_id,
+            stage="raw",
+            artifact_ref=raw_ref,
+            artifact_version=None,
+        )
+
+        result = await normalize.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=submission_id, stage="normalized", attempt=1),
+        )
+        assert result.success is False
+        assert result.error_code == "llm_provider_unavailable"
+        assert result.retry_classification == "recoverable"
 
     asyncio.run(_run())
 

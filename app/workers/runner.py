@@ -95,14 +95,21 @@ async def run_worker_until_stopped(
                     "did_work": str(did_work).lower(),
                 },
             )
-        except Exception:
+        except Exception as exc:
             if state is not None:
                 state.ticks_total += 1
                 state.errors_total += 1
             delay_ms = settings.error_backoff_ms
             logger.exception(
                 "worker tick error",
-                extra={"role": role, "service": role, "run_id": run_id, "stage": worker_loop.stage},
+                extra={
+                    "role": role,
+                    "service": role,
+                    "run_id": run_id,
+                    "stage": worker_loop.stage,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
             )
 
         try:

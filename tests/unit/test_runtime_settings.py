@@ -7,6 +7,7 @@ import pytest
 from app.main import run
 from app.services.runtime_settings import (
     integration_mode_from_env,
+    llm_settings_from_env,
     runtime_validation_mode_from_env,
     validate_runtime_configuration_for_role,
 )
@@ -31,6 +32,9 @@ RUNTIME_ENV_KEYS = (
     "LLM_API_KEY",
     "LLM_BASE_URL",
     "LLM_MODEL",
+    "LLM_REQUEST_TIMEOUT_SECONDS",
+    "LLM_REQUEST_MAX_RETRIES",
+    "LLM_REQUEST_RETRY_BACKOFF_MS",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_MODEL",
@@ -267,3 +271,46 @@ def test_dry_run_real_mode_reports_missing_llm_config_for_normalize_worker(
     assert "LLM_API_KEY" in captured.err
     assert "LLM_BASE_URL" in captured.err
     assert "LLM_MODEL" in captured.err
+
+
+@pytest.mark.unit
+def test_llm_settings_load_retry_and_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_BASE_URL", "https://agent.timeweb.cloud/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
+
+    settings = llm_settings_from_env()
+
+    assert settings.request_timeout_seconds == 30.0
+    assert settings.request_max_retries == 2
+    assert settings.request_retry_backoff_ms == 1000
+
+
+@pytest.mark.unit
+def test_llm_settings_validate_optional_retry_and_timeout_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_BASE_URL", "https://agent.timeweb.cloud/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("LLM_REQUEST_MAX_RETRIES", "3")
+    monkeypatch.setenv("LLM_REQUEST_RETRY_BACKOFF_MS", "1500")
+
+    settings = llm_settings_from_env()
+
+    assert settings.request_timeout_seconds == 45.0
+    assert settings.request_max_retries == 3
+    assert settings.request_retry_backoff_ms == 1500
+
+
+@pytest.mark.unit
+def test_llm_settings_reject_invalid_optional_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_BASE_URL", "https://agent.timeweb.cloud/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("LLM_REQUEST_MAX_RETRIES", "-1")
+
+    with pytest.raises(ValueError, match="LLM_REQUEST_MAX_RETRIES"):
+        llm_settings_from_env()
