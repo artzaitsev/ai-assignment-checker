@@ -27,7 +27,7 @@ prompts:
     {{assignment.description}}
 
     Содержимое работы:
-    {{normalized.content_markdown}}
+    {{normalized.submission_text}}
 
     Task schema:
     {{assignment.task_schema}}

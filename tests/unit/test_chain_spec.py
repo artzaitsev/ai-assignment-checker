@@ -40,11 +40,11 @@ def test_render_user_prompt_resolves_rubric_and_language() -> None:
     rendered = render_user_prompt(
         template=(
             "lang={{assignment.language}} policy={{rubric.ai_assistance_policy}} "
-            "submission={{normalized.content_markdown}}"
+            "submission={{normalized.submission_text}}"
         ),
         inputs={
             "assignment": {"language": "ru"},
-            "normalized": {"content_markdown": "hello"},
+            "normalized": {"submission_text": "hello"},
         },
         spec=spec,
     )

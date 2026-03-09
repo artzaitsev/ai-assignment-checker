@@ -11,7 +11,11 @@ from app.lib.artifacts.types import (
 
 
 def encode_normalized(artifact: NormalizedArtifact) -> bytes:
-    return json.dumps(artifact.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+    return json.dumps(
+        artifact.model_dump(mode="json"),
+        sort_keys=True,
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 def decode_normalized(payload: bytes) -> NormalizedArtifact:

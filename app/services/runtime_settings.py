@@ -108,6 +108,7 @@ def _strict_role_validators(role_name: str) -> tuple[tuple[str, Callable[[], obj
         "worker-normalize": (
             ("database", database_settings_from_env),
             ("s3", s3_settings_from_env),
+            ("llm", llm_settings_from_env),
         ),
         "worker-evaluate": (
             ("database", database_settings_from_env),

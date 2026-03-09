@@ -194,6 +194,19 @@ def test_stub_mode_stays_stubbed_even_when_s3_env_is_present(monkeypatch: pytest
 
 
 @pytest.mark.unit
+def test_real_mode_wires_real_llm_client_for_normalize_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_mode_env(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    _set_s3_env(monkeypatch)
+    _set_llm_env(monkeypatch)
+
+    role = validate_role("worker-normalize")
+    container = build_runtime_container(role, integration_mode="real")
+
+    assert isinstance(container.llm, OpenAICompatibleLLMClient)
+
+
+@pytest.mark.unit
 def test_real_mode_wires_real_llm_client_for_evaluate_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_mode_env(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
@@ -204,6 +217,17 @@ def test_real_mode_wires_real_llm_client_for_evaluate_worker(monkeypatch: pytest
     container = build_runtime_container(role, integration_mode="real")
 
     assert isinstance(container.llm, OpenAICompatibleLLMClient)
+
+
+@pytest.mark.unit
+def test_real_mode_requires_llm_config_for_normalize_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_mode_env(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    _set_s3_env(monkeypatch)
+
+    role = validate_role("worker-normalize")
+    with pytest.raises(ValueError, match="LLM_API_KEY"):
+        build_runtime_container(role, integration_mode="real")
 
 
 @pytest.mark.unit

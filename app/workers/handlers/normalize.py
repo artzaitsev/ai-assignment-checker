@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
-from app.domain.dto import NormalizePayloadCommand
+from app.domain.dto import NormalizePayloadCommand, NormalizationTaskInput
 from app.domain.models import ProcessResult, WorkItemClaim
 from app.domain.use_cases.normalize import normalize_payload
 from app.lib.artifacts.refs import storage_key_from_ref
@@ -15,9 +15,35 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     try:
         raw_artifact_ref = await deps.repository.get_artifact_ref(item_id=claim.item_id, stage="raw")
         raw_storage_key = storage_key_from_ref(raw_artifact_ref)
-        deps.storage.get_bytes(key=raw_storage_key)
+        raw_payload = deps.storage.get_bytes(key=raw_storage_key)
+        filename = raw_storage_key.rsplit("/", maxsplit=1)[-1]
+
+        submission = await deps.repository.get_submission(submission_id=claim.item_id)
+        if submission is None:
+            raise KeyError(f"submission not found: {claim.item_id}")
+
+        assignments = await deps.repository.list_assignments(active_only=False, include_task_schema=True)
+        assignment = next((item for item in assignments if item.assignment_public_id == submission.assignment_public_id), None)
+        if assignment is None or assignment.task_schema is None:
+            raise KeyError(f"assignment not found: {submission.assignment_public_id}")
+
+        assignment_tasks = tuple(
+            NormalizationTaskInput(task_id=task.task_id, task_index=index, task_text=task.title)
+            for index, task in enumerate(assignment.task_schema.tasks, start=1)
+        )
         result = normalize_payload(
-            NormalizePayloadCommand(submission_id=claim.item_id, artifact_ref=raw_artifact_ref)
+            NormalizePayloadCommand(
+                submission_id=claim.item_id,
+                artifact_ref=raw_artifact_ref,
+                filename=filename,
+                source_type="api_upload",
+                persisted_mime=None,
+                raw_payload=raw_payload,
+                assignment_public_id=assignment.assignment_public_id,
+                assignment_language=assignment.language,
+                assignment_tasks=assignment_tasks,
+            ),
+            llm=deps.llm,
         )
     except KeyError as exc:
         error_code = resolve_stage_error(stage="normalized", code="artifact_missing")
@@ -28,7 +54,8 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             retry_classification=classify_error(error_code),
         )
     except ValueError as exc:
-        error_code = resolve_stage_error(stage="normalized", code="schema_validation_failed")
+        code = "unsupported_format" if "unsupported plain-text" in str(exc) else "schema_validation_failed"
+        error_code = resolve_stage_error(stage="normalized", code=code)
         return ProcessResult(
             success=False,
             detail=str(exc),

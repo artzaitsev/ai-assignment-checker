@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.domain.evaluation_contracts import (
     CandidateFeedback,
@@ -45,6 +46,40 @@ class LinkArtifactCommand:
 class NormalizePayloadCommand:
     submission_id: str
     artifact_ref: str
+    filename: str
+    source_type: Literal["api_upload", "telegram"]
+    persisted_mime: str | None
+    raw_payload: bytes
+    assignment_public_id: str
+    assignment_language: str
+    assignment_tasks: tuple["NormalizationTaskInput", ...]
+
+
+@dataclass(frozen=True)
+class NormalizationTaskInput:
+    task_id: str
+    task_index: int
+    task_text: str
+
+
+@dataclass(frozen=True)
+class NormalizationParserInput:
+    assignment_public_id: str
+    language: str
+    tasks: tuple[NormalizationTaskInput, ...]
+    submission_text: str
+
+
+@dataclass(frozen=True)
+class NormalizationTaskSolution:
+    task_id: str
+    answer: str
+
+
+@dataclass(frozen=True)
+class NormalizationParserOutput:
+    task_solutions: tuple[NormalizationTaskSolution, ...]
+    unmapped_text: str
 
 
 @dataclass(frozen=True)

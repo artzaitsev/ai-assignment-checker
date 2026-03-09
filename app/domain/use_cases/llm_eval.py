@@ -69,7 +69,7 @@ def evaluate_submission(
             "task_schema": cmd.task_schema.to_dict(),
         },
         "normalized": {
-            "content_markdown": cmd.normalized_artifact.content_markdown,
+            "submission_text": cmd.normalized_artifact.submission_text,
         },
     }
     user_prompt = render_user_prompt(

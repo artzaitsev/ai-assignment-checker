@@ -353,15 +353,16 @@ def test_handlers_execute_skeleton_flow() -> None:
                 submission_public_id=created.submission_id,
                 assignment_public_id=assignment.assignment_public_id,
                 source_type="api_upload",
-                content_markdown="# normalized",
-                normalization_metadata={"producer": "test"},
+                submission_text="# normalized",
+                task_solutions=[],
+                unmapped_text="",
             ),
         )
         await repository.link_artifact(
             item_id=created.submission_id,
             stage="normalized",
             artifact_ref=f"normalized/{created.submission_id}.json",
-            artifact_version="normalized:v1",
+            artifact_version="normalized:v2",
         )
 
         claim = WorkItemClaim(item_id=created.submission_id, stage="llm-output", attempt=1)
@@ -592,7 +593,22 @@ def test_normalize_handler_uses_linked_raw_artifact_ref() -> None:
     )
 
     async def _run() -> None:
-        submission_id = "sub_with_raw"
+        candidate = await repository.create_candidate(first_name="N", last_name="R")
+        assignment = await repository.create_assignment(
+            title="Normalize",
+            description="Normalize plain text",
+            language="en",
+            task_schema=_task_schema(),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="norm-1",
+            initial_status="uploaded",
+            metadata_json={"filename": "task.txt"},
+        )
+        submission_id = created.submission_id
         raw_ref = storage.put_bytes(key=f"raw/{submission_id}/task.txt", payload=b"print('hello')")
         await repository.link_artifact(
             item_id=submission_id,
@@ -632,15 +648,16 @@ def test_evaluate_handler_returns_artifact_missing_when_assignment_absent() -> N
                 submission_public_id=submission_id,
                 assignment_public_id="asg_missing",
                 source_type="api_upload",
-                content_markdown="# normalized",
-                normalization_metadata={"producer": "test"},
+                submission_text="# normalized",
+                task_solutions=[],
+                unmapped_text="",
             ),
         )
         await repository.link_artifact(
             item_id=submission_id,
             stage="normalized",
             artifact_ref=f"normalized/{submission_id}.json",
-            artifact_version="normalized:v1",
+            artifact_version="normalized:v2",
         )
         result = await evaluate.process_claim(
             deps,
@@ -687,15 +704,16 @@ def test_evaluate_handler_warns_on_chain_digest_mismatch_and_continues(caplog: p
                 submission_public_id=created.submission_id,
                 assignment_public_id=assignment.assignment_public_id,
                 source_type="api_upload",
-                content_markdown="# normalized",
-                normalization_metadata={"producer": "test"},
+                submission_text="# normalized",
+                task_solutions=[],
+                unmapped_text="",
             ),
         )
         await repository.link_artifact(
             item_id=created.submission_id,
             stage="normalized",
             artifact_ref=f"normalized/{created.submission_id}.json",
-            artifact_version="normalized:v1",
+            artifact_version="normalized:v2",
         )
         await repository.persist_evaluation(
             submission_id=created.submission_id,

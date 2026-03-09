@@ -93,6 +93,27 @@ def test_strict_mode_aggregates_missing_required_values(monkeypatch: pytest.Monk
 
 
 @pytest.mark.unit
+def test_strict_mode_requires_llm_values_for_normalize_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("INTEGRATION_MODE", "real")
+    monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "strict")
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("S3_BUCKET", "artifacts")
+    monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-key")
+    monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret")
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_runtime_configuration_for_role(role_name="worker-normalize")
+
+    message = str(exc_info.value)
+    assert "llm" in message
+    assert "LLM_API_KEY" in message
+    assert "LLM_BASE_URL" in message
+    assert "LLM_MODEL" in message
+
+
+@pytest.mark.unit
 def test_strict_mode_uses_defaults_for_optional_values(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("INTEGRATION_MODE", "real")
@@ -102,6 +123,9 @@ def test_strict_mode_uses_defaults_for_optional_values(monkeypatch: pytest.Monke
     monkeypatch.setenv("S3_BUCKET", "artifacts")
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-key")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://agent.timeweb.cloud/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
 
     validate_runtime_configuration_for_role(role_name="worker-normalize")
 
@@ -213,3 +237,33 @@ def test_dry_run_real_mode_reports_missing_s3_config_for_normalize_worker(
     assert "S3_BUCKET" in captured.err
     assert "S3_ACCESS_KEY_ID" in captured.err
     assert "S3_SECRET_ACCESS_KEY" in captured.err
+
+
+@pytest.mark.unit
+def test_dry_run_real_mode_reports_missing_llm_config_for_normalize_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setattr("app.main.load_dotenv", lambda override=False: False)
+    workdir = tmp_path / "dotenv-missing-normalize-llm"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("INTEGRATION_MODE", "real")
+    monkeypatch.setenv("RUNTIME_VALIDATION_MODE", "strict")
+    monkeypatch.setenv("DATABASE_URL", "postgres://app:app@localhost:5432/app")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("S3_BUCKET", "artifacts")
+    monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-key")
+    monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret")
+
+    exit_code = run(["--role", "worker-normalize", "--dry-run-startup"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Runtime configuration validation failed for role 'worker-normalize'" in captured.err
+    assert "llm" in captured.err
+    assert "LLM_API_KEY" in captured.err
+    assert "LLM_BASE_URL" in captured.err
+    assert "LLM_MODEL" in captured.err

@@ -13,10 +13,11 @@ def test_normalized_artifact_requires_schema_fields() -> None:
         submission_public_id="sub_00000000000000000000000000",
         assignment_public_id="asg_00000000000000000000000000",
         source_type="api_upload",
-        content_markdown="# normalized",
-        normalization_metadata={"producer": "test"},
+        submission_text="# normalized",
+        task_solutions=[{"task_id": "task_1", "answer": "answer"}],
+        unmapped_text="",
     )
-    assert artifact.schema_version == "normalized:v1"
+    assert artifact.schema_version == "normalized:v2"
 
 
 @pytest.mark.unit

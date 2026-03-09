@@ -16,7 +16,7 @@ CompatPolicy = Literal["strict", "compatible"]
 
 SCHEMA_VERSION_BY_CONTRACT: dict[str, dict[str, str]] = {
     "v1": {
-        "normalized": "normalized:v1",
+        "normalized": "normalized:v2",
         "exports": "exports:v1",
     }
 }
