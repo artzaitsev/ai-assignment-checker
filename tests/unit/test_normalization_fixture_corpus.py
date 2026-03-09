@@ -23,6 +23,8 @@ EXPECTED_CASES = {
     "case_011_ocr_heavy_submission",
     "case_012_corrupt_supported_file",
     "case_013_unsupported_format",
+    "case_014_misnamed_docx_signature",
+    "case_015_corrupt_docx_supported",
 }
 NORMALIZED_V2_REQUIRED_FIELDS = {
     "submission_public_id",
@@ -88,6 +90,8 @@ def test_binary_fixtures_are_real_documents_and_ocr_cases_embed_images() -> None
     docx_text = CASES_DIR / "case_006_docx_text_only" / "input.docx"
     docx_image = CASES_DIR / "case_007_docx_embedded_image_needs_ocr" / "input.docx"
     odt_text = CASES_DIR / "case_008_odt_text_only" / "input.odt"
+    docx_misnamed = CASES_DIR / "case_014_misnamed_docx_signature" / "submission.bin"
+    docx_corrupt = CASES_DIR / "case_015_corrupt_docx_supported" / "input.docx"
     pdf_native = CASES_DIR / "case_009_pdf_native_text" / "input.pdf"
     pdf_mixed = CASES_DIR / "case_010_pdf_mixed_native_and_scanned" / "input.pdf"
     pdf_ocr = CASES_DIR / "case_011_ocr_heavy_submission" / "input.pdf"
@@ -95,6 +99,8 @@ def test_binary_fixtures_are_real_documents_and_ocr_cases_embed_images() -> None
     assert docx_text.read_bytes().startswith(b"PK")
     assert docx_image.read_bytes().startswith(b"PK")
     assert odt_text.read_bytes().startswith(b"PK")
+    assert docx_misnamed.read_bytes().startswith(b"PK")
+    assert docx_corrupt.read_bytes().startswith(b"PK")
 
     assert pdf_native.read_bytes().startswith(b"%PDF")
     assert pdf_mixed.read_bytes().startswith(b"%PDF")

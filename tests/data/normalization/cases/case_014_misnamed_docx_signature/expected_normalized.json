@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_014",
+  "assignment_public_id": "asg_db_review_v1",
+  "source_type": "api_upload",
+  "submission_text": "Database review submission\nTask 1 prompt: identify one schema issue and propose a fix.\nAnswer: add a CHECK constraint for status values (draft, active, archived).\nTask 2 prompt: explain one indexing improvement.\nAnswer: create a non-unique index on orders.status because support filters by status daily.\nnote | value\nreviewer | synthetic candidate\nsource | docx text only",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Add a CHECK constraint for allowed status values such as draft, active, and archived."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add a non-unique index on orders.status."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

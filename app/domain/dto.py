@@ -83,9 +83,17 @@ class NormalizationParserOutput:
 
 
 @dataclass(frozen=True)
+class OfficeExtractionResult:
+    detected_format: Literal["docx", "odt"]
+    submission_text: str
+    embedded_image_count: int
+
+
+@dataclass(frozen=True)
 class NormalizePayloadResult:
     normalized_artifact: NormalizedArtifact
     schema_version: str
+    office_extraction: OfficeExtractionResult | None = None
 
 
 @dataclass(frozen=True)

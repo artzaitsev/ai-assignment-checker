@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,9 @@ from app.repositories.stub import InMemoryWorkRepository
 from app.workers.handlers.deps import WorkerDeps
 from app.workers.handlers.factory import build_process_handler
 from app.workers.loop import WorkerLoop
+
+
+NORMALIZATION_CASES_DIR = Path("tests/data/normalization/cases")
 
 
 @pytest.mark.integration
@@ -233,5 +237,80 @@ def test_worker_evaluate_supports_multitask_assignment_criteria() -> None:
         assert score_payload["task_order"] == ["task_1", "task_2"]
         assert score_payload["task_scores"] == {"task_1": 8, "task_2": 9}
         assert repository.evaluations[0]["score_1_10"] == 8
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_worker_normalize_persists_office_docx_artifact() -> None:
+    async def _run() -> None:
+        repository = InMemoryWorkRepository()
+        storage = StubStorageClient()
+        artifact_repository = build_artifact_repository(storage=storage)
+        deps = WorkerDeps(
+            repository=repository,
+            artifact_repository=artifact_repository,
+            storage=storage,
+            telegram=StubTelegramClient(),
+            llm=StubLLMClient(),
+        )
+
+        candidate = await repository.create_candidate(first_name="Office", last_name="Docx")
+        assignment = await repository.create_assignment(
+            title="Office Normalize",
+            description="Docx normalize path",
+            language="en",
+            task_schema=parse_task_schema(
+                {
+                    "schema_version": "task-criteria:v1",
+                    "tasks": [
+                        {
+                            "task_id": "task_1",
+                            "title": "Task 1",
+                            "weight": 0.5,
+                            "criteria": [{"criterion_id": "correctness", "description": "c", "weight": 1.0}],
+                        },
+                        {
+                            "task_id": "task_2",
+                            "title": "Task 2",
+                            "weight": 0.5,
+                            "criteria": [{"criterion_id": "coverage", "description": "c", "weight": 1.0}],
+                        },
+                    ],
+                }
+            ),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="office-normalize-docx",
+            initial_status="uploaded",
+            metadata_json={"filename": "input.docx"},
+        )
+        payload = (NORMALIZATION_CASES_DIR / "case_006_docx_text_only" / "input.docx").read_bytes()
+        raw_ref = storage.put_bytes(key=f"raw/{created.submission_id}/input.docx", payload=payload)
+        await repository.link_artifact(
+            item_id=created.submission_id,
+            stage="raw",
+            artifact_ref=raw_ref,
+            artifact_version=None,
+        )
+
+        normalize_loop = WorkerLoop(
+            role="worker-normalize",
+            stage="normalized",
+            repository=repository,
+            process=build_process_handler("worker-normalize", deps),
+        )
+
+        assert await normalize_loop.run_once() is True
+        snapshot = await repository.get_submission(submission_id=created.submission_id)
+        assert snapshot is not None
+        assert snapshot.status == "normalized"
+        artifact = artifact_repository.load_normalized(artifact_ref=f"normalized/{created.submission_id}.json")
+        assert artifact.schema_version == "normalized:v2"
+        assert "Task 1 prompt: identify one schema issue and propose a fix." in artifact.submission_text
+        assert len(artifact.task_solutions) == 2
 
     asyncio.run(_run())

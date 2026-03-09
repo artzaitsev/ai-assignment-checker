@@ -32,10 +32,10 @@ def test_case_families_cover_plaintext_office_pdf_ocr_parser_and_errors() -> Non
     case_names = {entry.name for entry in CASES_DIR.iterdir() if entry.is_dir()}
 
     assert {"case_001_plain_text_ordered", "case_005_suffixless_plain_text"}.issubset(case_names)
-    assert {"case_006_docx_text_only", "case_008_odt_text_only"}.issubset(case_names)
+    assert {"case_006_docx_text_only", "case_008_odt_text_only", "case_014_misnamed_docx_signature"}.issubset(case_names)
     assert {"case_009_pdf_native_text", "case_010_pdf_mixed_native_and_scanned"}.issubset(case_names)
     assert {"case_007_docx_embedded_image_needs_ocr", "case_011_ocr_heavy_submission"}.issubset(case_names)
-    assert {"case_012_corrupt_supported_file", "case_013_unsupported_format"}.issubset(case_names)
+    assert {"case_012_corrupt_supported_file", "case_013_unsupported_format", "case_015_corrupt_docx_supported"}.issubset(case_names)
 
     parser_dir = NORMALIZATION_DIR / "parser_io"
     assert any(parser_dir.glob("parser_input_*.json"))

@@ -1,0 +1,9 @@
+{
+  "case_id": "case_014_misnamed_docx_signature",
+  "assignment_fixture": "assignments/assignment_db_review_v1.json",
+  "input_file": "submission.bin",
+  "input_format": "docx",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

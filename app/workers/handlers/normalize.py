@@ -54,7 +54,12 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             retry_classification=classify_error(error_code),
         )
     except ValueError as exc:
-        code = "unsupported_format" if "unsupported plain-text" in str(exc) else "schema_validation_failed"
+        if "unsupported submission format" in str(exc):
+            code = "unsupported_format"
+        elif "could not be parsed" in str(exc):
+            code = "file_parse_failed"
+        else:
+            code = "schema_validation_failed"
         error_code = resolve_stage_error(stage="normalized", code=code)
         return ProcessResult(
             success=False,

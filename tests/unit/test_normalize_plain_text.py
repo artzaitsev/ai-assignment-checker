@@ -29,13 +29,33 @@ class _ParserLLM:
         )
 
 
-def _command(*, payload: bytes, filename: str) -> NormalizePayloadCommand:
+class _SequencedParserLLM:
+    def __init__(self, responses: list[Mapping[str, object]]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+
+    def evaluate(self, request: object) -> LLMClientResult:
+        del request
+        if not self._responses:
+            raise AssertionError("No more queued LLM responses")
+        self.calls += 1
+        payload = self._responses.pop(0)
+        return LLMClientResult(
+            raw_text=json.dumps(payload, ensure_ascii=False),
+            raw_json=dict(payload),
+            tokens_input=1,
+            tokens_output=1,
+            latency_ms=1,
+        )
+
+
+def _command(*, payload: bytes, filename: str, persisted_mime: str | None = "text/plain") -> NormalizePayloadCommand:
     return NormalizePayloadCommand(
         submission_id="sub_test",
         artifact_ref=f"raw/sub_test/{filename}",
         filename=filename,
         source_type="api_upload",
-        persisted_mime="text/plain",
+        persisted_mime=persisted_mime,
         raw_payload=payload,
         assignment_public_id="asg_test",
         assignment_language="en",
@@ -73,7 +93,7 @@ def test_normalize_payload_supports_suffixless_and_plain_text_decoding_paths() -
 @pytest.mark.unit
 def test_normalize_payload_rejects_invalid_parser_schema() -> None:
     malformed_parser_output = {
-        "task_solutions": [{"task_id": "task_1"}],
+        "task_solutions": "not-an-array",
     }
     with pytest.raises(ValueError, match="normalization parser output"):
         normalize_payload(
@@ -103,6 +123,147 @@ def test_normalize_payload_accepts_solution_alias_from_parser_output() -> None:
 
 
 @pytest.mark.unit
+def test_normalize_payload_deduplicates_repeated_task_ids_and_keeps_first(caplog: pytest.LogCaptureFixture) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first-task-1"},
+            {"task_id": "task_1", "answer": "second-task-1"},
+            {"task_id": "task_2", "answer": "task-2"},
+        ],
+        "unmapped_text": "",
+    }
+    with caplog.at_level("WARNING", logger="runtime"):
+        result = normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=_ParserLLM(parser_output),
+        )
+
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": "first-task-1"},
+        {"task_id": "task_2", "answer": "task-2"},
+    ]
+    assert "normalization parser produced duplicate task_id; keeping first answer" in caplog.text
+
+
+@pytest.mark.unit
+def test_normalize_payload_coerces_non_string_answers_with_warning(caplog: pytest.LogCaptureFixture) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": {"text": "nested"}},
+            {"task_id": "task_2", "answer": 42},
+        ],
+        "unmapped_text": "",
+    }
+    with caplog.at_level("WARNING", logger="runtime"):
+        result = normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=_ParserLLM(parser_output),
+        )
+
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": '{"text": "nested"}'},
+        {"task_id": "task_2", "answer": "42"},
+    ]
+    assert "normalization parser produced structured answer; coercing to JSON string" in caplog.text
+    assert "normalization parser produced non-string answer; coercing to text" in caplog.text
+
+
+@pytest.mark.unit
+def test_normalize_payload_coerces_null_answer_to_empty_string(caplog: pytest.LogCaptureFixture) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": None},
+            {"task_id": "task_2", "answer": "ok"},
+        ],
+        "unmapped_text": "",
+    }
+    with caplog.at_level("WARNING", logger="runtime"):
+        result = normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=_ParserLLM(parser_output),
+        )
+
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": ""},
+        {"task_id": "task_2", "answer": "ok"},
+    ]
+    assert "normalization parser produced null answer; coercing to empty string" in caplog.text
+
+
+@pytest.mark.unit
+def test_normalize_payload_coerces_missing_answer_to_empty_string(caplog: pytest.LogCaptureFixture) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1"},
+            {"task_id": "task_2", "answer": "ok"},
+        ],
+        "unmapped_text": "",
+    }
+    with caplog.at_level("WARNING", logger="runtime"):
+        result = normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=_ParserLLM(parser_output),
+        )
+
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": ""},
+        {"task_id": "task_2", "answer": "ok"},
+    ]
+    assert "normalization parser omitted answer; coercing to empty string" in caplog.text
+
+
+@pytest.mark.unit
+def test_normalize_payload_falls_back_to_assignment_order_when_task_id_missing(caplog: pytest.LogCaptureFixture) -> None:
+    parser_output = {
+        "task_solutions": [
+            {"answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    with caplog.at_level("WARNING", logger="runtime"):
+        result = normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=_ParserLLM(parser_output),
+        )
+
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": "first"},
+        {"task_id": "task_2", "answer": "second"},
+    ]
+    assert "normalization parser omitted task_id; using fallback from assignment order" in caplog.text
+
+
+@pytest.mark.unit
+def test_normalize_payload_runs_repair_pass_for_missing_answers() -> None:
+    llm = _SequencedParserLLM(
+        [
+            {
+                "task_solutions": [
+                    {"task_id": "task_1", "answer": "a1"},
+                    {"task_id": "task_2", "answer": ""},
+                ],
+                "unmapped_text": "",
+            },
+            {
+                "task_solutions": [
+                    {"task_id": "task_2", "answer": "repaired-a2"},
+                ],
+            },
+        ]
+    )
+    result = normalize_payload(
+        _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+        llm=llm,
+    )
+    assert llm.calls == 2
+    assert result.normalized_artifact.task_solutions == [
+        {"task_id": "task_1", "answer": "a1"},
+        {"task_id": "task_2", "answer": "repaired-a2"},
+    ]
+
+
+@pytest.mark.unit
 def test_all_committed_plain_text_fixtures_normalize_successfully() -> None:
     parser_output = {
         "task_solutions": [
@@ -123,3 +284,80 @@ def test_all_committed_plain_text_fixtures_normalize_successfully() -> None:
         result = normalize_payload(_command(payload=payload, filename=input_name), llm=_ParserLLM(parser_output))
         assert result.normalized_artifact.schema_version == "normalized:v2"
         assert result.normalized_artifact.submission_text
+        assert result.office_extraction is None
+
+
+@pytest.mark.unit
+def test_normalize_payload_detects_docx_and_odt_by_signature_and_extracts_text() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+
+    docx_payload = (NORMALIZATION_CASES_DIR / "case_006_docx_text_only" / "input.docx").read_bytes()
+    docx_result = normalize_payload(
+        _command(payload=docx_payload, filename="submission.bin", persisted_mime="application/octet-stream"),
+        llm=_ParserLLM(parser_output),
+    )
+    assert docx_result.office_extraction is not None
+    assert docx_result.office_extraction.detected_format == "docx"
+    assert docx_result.office_extraction.embedded_image_count == 0
+    assert "Task 1 prompt: identify one schema issue and propose a fix." in docx_result.normalized_artifact.submission_text
+    assert "note | value" in docx_result.normalized_artifact.submission_text
+
+    odt_payload = (NORMALIZATION_CASES_DIR / "case_008_odt_text_only" / "input.odt").read_bytes()
+    odt_result = normalize_payload(
+        _command(payload=odt_payload, filename="notes.tmp", persisted_mime="application/octet-stream"),
+        llm=_ParserLLM(parser_output),
+    )
+    assert odt_result.office_extraction is not None
+    assert odt_result.office_extraction.detected_format == "odt"
+    assert odt_result.office_extraction.embedded_image_count == 0
+    assert "SELECT id, email FROM users WHERE deleted_at = NULL;" in odt_result.normalized_artifact.submission_text
+    assert "- Task 1: use IS NULL instead of = NULL." in odt_result.normalized_artifact.submission_text
+
+
+@pytest.mark.unit
+def test_normalize_payload_tracks_embedded_image_handoff_for_docx() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_007_docx_embedded_image_needs_ocr" / "input.docx").read_bytes()
+    result = normalize_payload(
+        _command(
+            payload=payload,
+            filename="input.docx",
+            persisted_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        llm=_ParserLLM(parser_output),
+    )
+    assert result.office_extraction is not None
+    assert result.office_extraction.detected_format == "docx"
+    assert result.office_extraction.embedded_image_count == 1
+    assert result.normalized_artifact.schema_version == "normalized:v2"
+    assert "embedded_image_count" not in result.normalized_artifact.model_dump()
+    assert "The answer was pasted as an image from chat." in result.normalized_artifact.submission_text
+
+
+@pytest.mark.unit
+def test_normalize_payload_fails_deterministically_for_corrupt_office_package() -> None:
+    parser_output = {
+        "task_solutions": [
+            {"task_id": "task_1", "answer": "first"},
+            {"task_id": "task_2", "answer": "second"},
+        ],
+        "unmapped_text": "",
+    }
+    payload = (NORMALIZATION_CASES_DIR / "case_015_corrupt_docx_supported" / "input.docx").read_bytes()
+    with pytest.raises(ValueError, match="Supported file format could not be parsed"):
+        normalize_payload(
+            _command(payload=payload, filename="input.docx", persisted_mime="application/octet-stream"),
+            llm=_ParserLLM(parser_output),
+        )
