@@ -1,0 +1,3 @@
+{
+  "text": "Screenshot from messenger. Task 1. Missing foreign key: orders.customer_id to customers.id. Fix: add the foreign key and backfill bad rows before enabling the constraint. Task 2. Add a BTREE index on orders.customer_id for the join."
+}

@@ -1,0 +1,3 @@
+{
+  "text": "Scanned addendum. Photo fragment. Task 2 answer: use a partial index on active rows only. That keeps the index smaller and speeds up the filtered query."
+}

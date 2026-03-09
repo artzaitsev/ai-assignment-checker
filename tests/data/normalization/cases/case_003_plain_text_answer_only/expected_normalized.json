@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_003",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "Use numeric comparison in WHERE instead of text coercion. Add LIMIT and index the filtered column.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Fix the WHERE type mismatch."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add LIMIT and index the filtered column."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

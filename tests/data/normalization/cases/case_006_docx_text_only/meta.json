@@ -1,0 +1,9 @@
+{
+  "case_id": "case_006_docx_text_only",
+  "assignment_fixture": "assignments/assignment_db_review_v1.json",
+  "input_file": "input.docx",
+  "input_format": "docx",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

@@ -1,0 +1,14 @@
+{
+  "assignment_public_id": "asg_sql_debug_v1",
+  "title": "SQL debugging assignment",
+  "tasks": [
+    {
+      "task_id": "task_1",
+      "prompt": "Find the bug in the provided query and fix it."
+    },
+    {
+      "task_id": "task_2",
+      "prompt": "Describe one performance improvement."
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_011",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "Image-heavy export from mobile scanner. Forwarded screenshot. Task 1: replace SELECT * with explicit columns to reduce payload. Task 2: add an index on email for the lookup query. Extra note: keep the projection stable for exports.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Replace SELECT * with an explicit column list to reduce payload."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add an index on email for the lookup query."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

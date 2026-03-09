@@ -1,0 +1,9 @@
+{
+  "case_id": "case_008_odt_text_only",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.odt",
+  "input_format": "odt",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

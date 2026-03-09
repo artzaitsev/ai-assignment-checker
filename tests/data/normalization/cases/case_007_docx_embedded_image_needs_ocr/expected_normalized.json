@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_007",
+  "assignment_public_id": "asg_db_review_v1",
+  "source_type": "api_upload",
+  "submission_text": "Screenshot handoff. The answer was pasted as an image from chat. Screenshot from messenger. Task 1. Missing foreign key: orders.customer_id to customers.id. Fix: add the foreign key and backfill bad rows before enabling the constraint. Task 2. Add a BTREE index on orders.customer_id for the join.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Add the missing foreign key and backfill invalid rows before enforcing it."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add a BTREE index on orders.customer_id."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

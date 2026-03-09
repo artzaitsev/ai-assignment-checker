@@ -1,0 +1,2 @@
+Task 1 answer: switch to explicit JOIN conditions.
+Task 2 answer: add composite index on (user_id, created_at).

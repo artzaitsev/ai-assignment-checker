@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_008",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "SQL debug notes. Problem query: SELECT id, email FROM users WHERE deleted_at = NULL; Task 1: use IS NULL instead of = NULL. Task 2: add an index on deleted_at if the dataset is large and the filter is frequent. Short conclusion: the bug is semantic, not syntactic.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Use IS NULL instead of = NULL."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add an index on deleted_at for frequent filters."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

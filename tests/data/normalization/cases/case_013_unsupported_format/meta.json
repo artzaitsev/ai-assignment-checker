@@ -1,0 +1,9 @@
+{
+  "case_id": "case_013_unsupported_format",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.exe",
+  "input_format": "unsupported",
+  "ocr_mode": "off",
+  "expects_error": true,
+  "expected_error": "expected_error.json"
+}

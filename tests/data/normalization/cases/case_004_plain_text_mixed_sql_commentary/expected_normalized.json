@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_004",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "SELECT * FROM orders WHERE created_at > '2024-01-01'; This query is okay for correctness but needs an index on created_at for speed.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Query is syntactically valid for the task context."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add index on created_at for better performance."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

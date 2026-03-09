@@ -1,0 +1,14 @@
+{
+  "assignment_public_id": "asg_db_review_v1",
+  "title": "Database review assignment",
+  "tasks": [
+    {
+      "task_id": "task_1",
+      "prompt": "Identify one schema issue and propose a fix."
+    },
+    {
+      "task_id": "task_2",
+      "prompt": "Explain one indexing improvement."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "case_id": "case_012_corrupt_supported_file",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.pdf",
+  "input_format": "pdf",
+  "ocr_mode": "off",
+  "expects_error": true,
+  "expected_error": "expected_error.json"
+}

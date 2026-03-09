@@ -1,0 +1,9 @@
+{
+  "case_id": "case_004_plain_text_mixed_sql_commentary",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.txt",
+  "input_format": "txt",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

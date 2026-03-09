@@ -1,0 +1,10 @@
+{
+  "case_id": "case_011_ocr_heavy_submission",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.pdf",
+  "input_format": "pdf",
+  "ocr_mode": "required",
+  "ocr_stub": "ocr_stub.json",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

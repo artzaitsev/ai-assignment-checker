@@ -1,0 +1,9 @@
+{
+  "case_id": "case_001_plain_text_ordered",
+  "assignment_fixture": "assignments/assignment_db_review_v1.json",
+  "input_file": "input.txt",
+  "input_format": "txt",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}
