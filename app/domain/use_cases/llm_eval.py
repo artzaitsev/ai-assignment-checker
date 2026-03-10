@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 
 from app.domain.evaluation_contracts import (
     CandidateFeedback,
@@ -25,6 +26,11 @@ from app.domain.scoring import (
 )
 
 COMPONENT_ID = "domain.llm.evaluate"
+logger = logging.getLogger("runtime")
+_EVALUATION_JSON_REPAIR_SYSTEM_PROMPT = (
+    "You repair evaluator output into strict JSON object. "
+    "Return only JSON, no markdown, no explanations."
+)
 
 
 @dataclass(frozen=True)
@@ -96,14 +102,23 @@ def evaluate_submission(
     if payload is None:
         try:
             loaded = json.loads(llm_result.raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("llm output is not valid JSON") from exc
+        except json.JSONDecodeError:
+            loaded = _repair_malformed_evaluation_json(
+                malformed_output=llm_result.raw_text,
+                cmd=cmd,
+                llm=llm,
+            )
+            if loaded is None:
+                raise ValueError("llm output is not valid JSON")
         if not isinstance(loaded, dict):
             raise ValueError("llm output root must be JSON object")
         payload = loaded
 
-    validate_llm_response(payload=payload, schema=cmd.chain_spec.llm_response)
-    typed_payload = _parse_llm_evaluation_payload(payload)
+    typed_payload, evaluation_diagnostics = _parse_with_repair_or_fallback(
+        payload=payload,
+        cmd=cmd,
+        llm=llm,
+    )
     score_1_10, score_breakdown = _parse_task_scores(payload=typed_payload, schema=cmd.task_schema)
 
     parsed_organizer_feedback = typed_payload.organizer_feedback
@@ -135,7 +150,144 @@ def evaluate_submission(
             "model": cmd.effective_model,
             "response_language": cmd.assignment_language,
         },
+        evaluation_diagnostics=evaluation_diagnostics,
     )
+
+
+def _parse_with_repair_or_fallback(
+    *,
+    payload: dict[str, object],
+    cmd: EvaluateSubmissionCommand,
+    llm: LLMClient,
+) -> tuple[LLMEvaluationPayload, dict[str, object]]:
+    diagnostics: dict[str, object] = {
+        "original_shape": _payload_shape(payload),
+        "repair_applied": False,
+        "fallback_used": False,
+    }
+
+    try:
+        validate_llm_response(payload=payload, schema=cmd.chain_spec.llm_response)
+        typed_payload = _parse_llm_evaluation_payload(payload)
+        aligned_payload, aligned = _align_payload_to_schema(payload=typed_payload, schema=cmd.task_schema)
+        diagnostics["repair_applied"] = aligned
+        if aligned:
+            diagnostics["alignment"] = "schema_alignment"
+        return aligned_payload, diagnostics
+    except ValueError as exc:
+        diagnostics["strict_error"] = str(exc)
+
+    repaired_payload, repair_notes = _repair_llm_payload_shape(payload)
+    if repaired_payload is not None:
+        diagnostics["repair_applied"] = True
+        diagnostics["repair_notes"] = repair_notes
+        try:
+            validate_llm_response(payload=repaired_payload, schema=cmd.chain_spec.llm_response)
+            typed_payload = _parse_llm_evaluation_payload(repaired_payload)
+            aligned_payload, aligned = _align_payload_to_schema(payload=typed_payload, schema=cmd.task_schema)
+            if aligned:
+                diagnostics["alignment"] = "schema_alignment"
+            return aligned_payload, diagnostics
+        except ValueError as exc:
+            diagnostics["repair_error"] = str(exc)
+
+    repaired_by_model = _repair_llm_payload_with_model(payload=payload, cmd=cmd, llm=llm)
+    if repaired_by_model is not None:
+        diagnostics["repair_applied"] = True
+        existing_notes_obj = diagnostics.get("repair_notes")
+        existing_notes: list[object] = []
+        if isinstance(existing_notes_obj, list):
+            existing_notes = [item for item in existing_notes_obj]
+        diagnostics["repair_notes"] = [*existing_notes, "llm_json_repair"]
+        try:
+            validate_llm_response(payload=repaired_by_model, schema=cmd.chain_spec.llm_response)
+            typed_payload = _parse_llm_evaluation_payload(repaired_by_model)
+            aligned_payload, aligned = _align_payload_to_schema(payload=typed_payload, schema=cmd.task_schema)
+            if aligned:
+                diagnostics["alignment"] = "schema_alignment"
+            return aligned_payload, diagnostics
+        except ValueError as exc:
+            diagnostics["repair_error"] = str(exc)
+
+    diagnostics["fallback_used"] = False
+    logger.error(
+        "llm evaluation payload is invalid after bounded repair",
+        extra={
+            "component": COMPONENT_ID,
+            "submission_id": cmd.submission_id,
+            "strict_error": diagnostics.get("strict_error"),
+            "repair_error": diagnostics.get("repair_error"),
+        },
+    )
+    raise ValueError(
+        "llm output failed schema validation after bounded repair"
+    )
+
+
+def _repair_malformed_evaluation_json(
+    *,
+    malformed_output: str,
+    cmd: EvaluateSubmissionCommand,
+    llm: LLMClient,
+) -> dict[str, object] | None:
+    repair_payload = {
+        "assignment_language": cmd.assignment_language,
+        "task_schema": cmd.task_schema.to_dict(),
+        "llm_response_schema": cmd.chain_spec.llm_response,
+        "malformed_output": malformed_output,
+    }
+    repair_result = llm.evaluate(
+        LLMClientRequest(
+            system_prompt=_EVALUATION_JSON_REPAIR_SYSTEM_PROMPT,
+            user_prompt=json.dumps(repair_payload, ensure_ascii=False, sort_keys=True),
+            model=cmd.effective_model,
+            temperature=0.0,
+            seed=42,
+            response_language=cmd.assignment_language,
+        )
+    )
+    if isinstance(repair_result.raw_json, dict):
+        return repair_result.raw_json
+    try:
+        decoded = json.loads(repair_result.raw_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
+
+
+def _repair_llm_payload_with_model(
+    *,
+    payload: dict[str, object],
+    cmd: EvaluateSubmissionCommand,
+    llm: LLMClient,
+) -> dict[str, object] | None:
+    repair_payload = {
+        "assignment_language": cmd.assignment_language,
+        "task_schema": cmd.task_schema.to_dict(),
+        "llm_response_schema": cmd.chain_spec.llm_response,
+        "invalid_payload": payload,
+    }
+    repair_result = llm.evaluate(
+        LLMClientRequest(
+            system_prompt=_EVALUATION_JSON_REPAIR_SYSTEM_PROMPT,
+            user_prompt=json.dumps(repair_payload, ensure_ascii=False, sort_keys=True),
+            model=cmd.effective_model,
+            temperature=0.0,
+            seed=42,
+            response_language=cmd.assignment_language,
+        )
+    )
+    if isinstance(repair_result.raw_json, dict):
+        return repair_result.raw_json
+    try:
+        decoded = json.loads(repair_result.raw_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
 
 
 def _parse_task_scores(
@@ -333,6 +485,193 @@ def _require_score(data: dict[str, object], key: str, path: str) -> int:
     if value < 1 or value > 10:
         raise ValueError(f"{path} must be between 1 and 10")
     return value
+
+
+def _align_payload_to_schema(*, payload: LLMEvaluationPayload, schema: TaskSchema) -> tuple[LLMEvaluationPayload, bool]:
+    tasks_by_id = _index_llm_tasks_by_id(payload.tasks)
+    expected_task_ids = {task.task_id for task in schema.tasks}
+    if set(tasks_by_id.keys()) != expected_task_ids:
+        raise ValueError("llm tasks payload does not match configured task_ids")
+
+    aligned_tasks: list[LLMTaskPayload] = []
+    changed = False
+    for task_def in schema.tasks:
+        llm_task = tasks_by_id[task_def.task_id]
+        criteria_by_id = _index_llm_criteria_by_id(llm_task.criteria)
+        expected_criteria_ids = {item.criterion_id for item in task_def.criteria}
+        if set(criteria_by_id.keys()) != expected_criteria_ids:
+            raise ValueError("llm criteria payload does not match configured criterion_ids")
+
+        aligned_criteria = tuple(criteria_by_id[item.criterion_id] for item in task_def.criteria)
+        if tuple(item.criterion_id for item in llm_task.criteria) != tuple(item.criterion_id for item in aligned_criteria):
+            changed = True
+        aligned_tasks.append(LLMTaskPayload(task_id=task_def.task_id, criteria=aligned_criteria))
+
+    if not changed and tuple(task.task_id for task in payload.tasks) == tuple(task.task_id for task in aligned_tasks):
+        return payload, False
+
+    return (
+        LLMEvaluationPayload(
+            tasks=tuple(aligned_tasks),
+            organizer_feedback=payload.organizer_feedback,
+            candidate_feedback=payload.candidate_feedback,
+            ai_assistance=payload.ai_assistance,
+        ),
+        True,
+    )
+
+
+def _repair_llm_payload_shape(payload: dict[str, object]) -> tuple[dict[str, object] | None, list[str]]:
+    notes: list[str] = []
+    root = payload
+    for key in ("result", "response", "output", "evaluation", "data"):
+        nested = root.get(key)
+        if isinstance(nested, dict):
+            root = nested
+            notes.append(f"unwrapped:{key}")
+            break
+
+    required_keys = {"tasks", "organizer_feedback", "candidate_feedback", "ai_assistance"}
+    if required_keys.issubset(root.keys()):
+        return root, notes
+
+    repaired: dict[str, object] = {}
+
+    tasks_value = _first_present(root, ("tasks", "task_results", "taskScores", "results"))
+    if isinstance(tasks_value, list):
+        normalized_tasks: list[dict[str, object]] = []
+        for item in tasks_value:
+            if not isinstance(item, dict):
+                continue
+            task_id = _first_present(item, ("task_id", "taskId"))
+            criteria_value = _first_present(item, ("criteria", "criterion_scores", "criteria_scores"))
+            if not isinstance(task_id, str) or not isinstance(criteria_value, list):
+                continue
+            normalized_criteria: list[dict[str, object]] = []
+            for criterion in criteria_value:
+                if not isinstance(criterion, dict):
+                    continue
+                criterion_id = _first_present(criterion, ("criterion_id", "criterionId"))
+                score = _coerce_score(_first_present(criterion, ("score", "rating", "value")))
+                reason_raw = _first_present(criterion, ("reason", "rationale", "comment"))
+                reason = reason_raw if isinstance(reason_raw, str) else ""
+                if isinstance(criterion_id, str) and score is not None:
+                    normalized_criteria.append(
+                        {
+                            "criterion_id": criterion_id,
+                            "score": score,
+                            "reason": reason,
+                        }
+                    )
+            normalized_tasks.append(
+                {
+                    "task_id": task_id,
+                    "criteria": normalized_criteria,
+                }
+            )
+        repaired["tasks"] = normalized_tasks
+        notes.append("normalized:tasks")
+
+    organizer_value = _first_present(root, ("organizer_feedback", "organizerFeedback", "reviewer_feedback"))
+    if isinstance(organizer_value, dict):
+        repaired["organizer_feedback"] = {
+            "strengths": _coerce_string_list(_first_present(organizer_value, ("strengths",))),
+            "issues": _coerce_string_list(_first_present(organizer_value, ("issues", "weaknesses"))),
+            "recommendations": _coerce_string_list(
+                _first_present(organizer_value, ("recommendations", "next_steps"))
+            ),
+        }
+        notes.append("normalized:organizer_feedback")
+
+    candidate_value = _first_present(root, ("candidate_feedback", "candidateFeedback", "feedback"))
+    if isinstance(candidate_value, dict):
+        summary = _first_present(candidate_value, ("summary",))
+        repaired["candidate_feedback"] = {
+            "summary": summary if isinstance(summary, str) else "",
+            "what_went_well": _coerce_string_list(_first_present(candidate_value, ("what_went_well", "strengths"))),
+            "what_to_improve": _coerce_string_list(_first_present(candidate_value, ("what_to_improve", "issues"))),
+        }
+        notes.append("normalized:candidate_feedback")
+
+    ai_value = _first_present(root, ("ai_assistance", "aiAssistance", "ai_usage"))
+    if isinstance(ai_value, dict):
+        likelihood = _coerce_probability(_first_present(ai_value, ("likelihood", "probability")))
+        confidence = _coerce_probability(_first_present(ai_value, ("confidence",)))
+        disclaimer = _first_present(ai_value, ("disclaimer", "note"))
+        repaired["ai_assistance"] = {
+            "likelihood": likelihood if likelihood is not None else 0.0,
+            "confidence": confidence if confidence is not None else 0.0,
+            "disclaimer": disclaimer if isinstance(disclaimer, str) else "",
+        }
+        notes.append("normalized:ai_assistance")
+
+    if not repaired:
+        return None, notes
+    return repaired, notes
+
+
+def _payload_shape(payload: dict[str, object]) -> dict[str, object]:
+    keys = sorted(payload.keys())
+    return {
+        "keys": keys,
+        "has_tasks": "tasks" in payload,
+        "has_organizer_feedback": "organizer_feedback" in payload,
+        "has_candidate_feedback": "candidate_feedback" in payload,
+        "has_ai_assistance": "ai_assistance" in payload,
+    }
+
+
+def _first_present(data: dict[str, object], keys: tuple[str, ...]) -> object | None:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
+
+
+def _coerce_score(value: object) -> int | None:
+    if isinstance(value, int):
+        return value if 1 <= value <= 10 else None
+    if isinstance(value, float):
+        rounded = int(round(value))
+        return rounded if 1 <= rounded <= 10 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if 1 <= parsed <= 10 else None
+    return None
+
+
+def _coerce_probability(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number < 0.0:
+            return 0.0
+        if number > 1.0:
+            return 1.0
+        return number
+    if isinstance(value, str):
+        try:
+            parsed = float(value.strip())
+        except ValueError:
+            return None
+        if parsed < 0.0:
+            return 0.0
+        if parsed > 1.0:
+            return 1.0
+        return parsed
+    return None
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                items.append(item)
+        return items
+    return []
 
 
 def _build_normalized_prompt_payload(

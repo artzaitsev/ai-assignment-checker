@@ -164,9 +164,13 @@ class SubmissionListQuery:
     statuses: tuple[SubmissionStatus, ...] | None = None
     submission_ids: tuple[str, ...] | None = None
     candidate_public_id: str | None = None
+    candidate_query: str | None = None
     assignment_public_id: str | None = None
+    assignment_query: str | None = None
     source_type: str | None = None
     has_error: bool | None = None
+    score_min: int | None = None
+    score_max: int | None = None
     created_from: datetime | None = None
     created_to: datetime | None = None
     include: frozenset[SubmissionFieldGroup] = frozenset({SubmissionFieldGroup.CORE})
@@ -188,10 +192,13 @@ class SubmissionListItem:
     @dataclass(frozen=True)
     class Candidate:
         public_id: str
+        first_name: str | None = None
+        last_name: str | None = None
 
     @dataclass(frozen=True)
     class Assignment:
         public_id: str
+        title: str | None = None
 
     @dataclass(frozen=True)
     class Source:

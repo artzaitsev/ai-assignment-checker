@@ -193,6 +193,64 @@ class InMemoryWorkRepository:
         items.sort(key=lambda item: item.assignment_public_id)
         return items
 
+    async def get_assignment_by_public_id(
+        self,
+        *,
+        assignment_public_id: str,
+        include_task_schema: bool = False,
+    ) -> AssignmentSnapshot | None:
+        row = self.assignments.get(assignment_public_id)
+        if row is None:
+            return None
+        return AssignmentSnapshot(
+            assignment_public_id=row.assignment_public_id,
+            title=row.title,
+            description=row.description,
+            language=row.language,
+            task_schema=row.task_schema if include_task_schema else None,
+            is_active=row.is_active,
+        )
+
+    async def update_assignment(
+        self,
+        *,
+        assignment_public_id: str,
+        title: str,
+        description: str,
+        language: str,
+        task_schema: TaskSchema,
+        is_active: bool,
+    ) -> AssignmentSnapshot | None:
+        row = self.assignments.get(assignment_public_id)
+        if row is None:
+            return None
+        updated = _AssignmentRow(
+            assignment_public_id=assignment_public_id,
+            title=title,
+            description=description,
+            language=language,
+            task_schema=task_schema,
+            is_active=is_active,
+        )
+        self.assignments[assignment_public_id] = updated
+        return AssignmentSnapshot(
+            assignment_public_id=updated.assignment_public_id,
+            title=updated.title,
+            description=updated.description,
+            language=updated.language,
+            task_schema=updated.task_schema,
+            is_active=updated.is_active,
+        )
+
+    async def delete_assignment(self, *, assignment_public_id: str) -> bool:
+        has_submissions = any(
+            submission.assignment_public_id == assignment_public_id for submission in self.submissions.values()
+        )
+        if has_submissions:
+            raise DomainInvariantError("assignment has linked submissions and cannot be deleted")
+        deleted = self.assignments.pop(assignment_public_id, None)
+        return deleted is not None
+
     async def ensure_no_null_task_schema_rows(self) -> None:
         if any(row.task_schema is None for row in self.assignments.values()):
             raise DomainInvariantError("rollout blocked: assignments.task_schema contains NULL rows")
@@ -280,8 +338,20 @@ class InMemoryWorkRepository:
                 continue
             if query.candidate_public_id is not None and row.candidate_public_id != query.candidate_public_id:
                 continue
+            if query.candidate_query is not None:
+                candidate_row = self.candidates.get(row.candidate_public_id)
+                candidate_full_name = ""
+                if candidate_row is not None:
+                    candidate_full_name = f"{candidate_row.first_name} {candidate_row.last_name}".strip().lower()
+                if query.candidate_query.strip().lower() not in candidate_full_name:
+                    continue
             if query.assignment_public_id is not None and row.assignment_public_id != query.assignment_public_id:
                 continue
+            if query.assignment_query is not None:
+                assignment_row = self.assignments.get(row.assignment_public_id)
+                assignment_title = assignment_row.title.lower() if assignment_row is not None else ""
+                if query.assignment_query.strip().lower() not in assignment_title:
+                    continue
             source = source_by_submission.get(row.submission_id)
             if query.source_type is not None and (source is None or source.source_type != query.source_type):
                 continue
@@ -299,6 +369,10 @@ class InMemoryWorkRepository:
 
             include = set(query.include) | {SubmissionFieldGroup.CORE}
             score_value = _as_int(eval_row.get("score_1_10") if eval_row else None)
+            if query.score_min is not None and (score_value or 0) < query.score_min:
+                continue
+            if query.score_max is not None and (score_value or 0) > query.score_max:
+                continue
             score_breakdown_raw = _as_json_dict(eval_row.get("score_breakdown") if eval_row else None)
             organizer_raw = _as_json_dict(eval_row.get("organizer_feedback") if eval_row else None)
             candidate_raw = _as_json_dict(eval_row.get("candidate_feedback") if eval_row else None)
@@ -312,10 +386,17 @@ class InMemoryWorkRepository:
                         created_at=row.created_at,
                         updated_at=row.updated_at,
                     ),
-                    candidate=SubmissionListItem.Candidate(public_id=row.candidate_public_id)
+                    candidate=SubmissionListItem.Candidate(
+                        public_id=row.candidate_public_id,
+                        first_name=(self.candidates[row.candidate_public_id].first_name if row.candidate_public_id in self.candidates else None),
+                        last_name=(self.candidates[row.candidate_public_id].last_name if row.candidate_public_id in self.candidates else None),
+                    )
                     if SubmissionFieldGroup.CANDIDATE in include
                     else None,
-                    assignment=SubmissionListItem.Assignment(public_id=row.assignment_public_id)
+                    assignment=SubmissionListItem.Assignment(
+                        public_id=row.assignment_public_id,
+                        title=(self.assignments[row.assignment_public_id].title if row.assignment_public_id in self.assignments else None),
+                    )
                     if SubmissionFieldGroup.ASSIGNMENT in include
                     else None,
                     source=SubmissionListItem.Source(type=source.source_type, external_id=source.source_external_id)
@@ -486,8 +567,16 @@ class InMemoryWorkRepository:
             raise DomainInvariantError("claim ownership is stale")
 
         if success:
-            self.transitions.append((item_id, lifecycle.in_progress_state, lifecycle.success_state))
-            row.status = lifecycle.success_state
+            target_state = lifecycle.success_state
+            if stage == "exports":
+                last_delivery = next(
+                    (delivery for delivery in reversed(self.deliveries) if delivery["submission_id"] == item_id),
+                    None,
+                )
+                if last_delivery is not None and last_delivery.get("status") == "skipped":
+                    target_state = lifecycle.source_state
+            self.transitions.append((item_id, lifecycle.in_progress_state, target_state))
+            row.status = target_state
             row.last_error_code = None
             row.last_error_message = None
         else:

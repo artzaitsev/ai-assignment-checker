@@ -10,7 +10,7 @@
   <div class="flex flex-wrap items-center justify-between gap-2">
     <h2 class="text-lg font-bold">{{ title }}</h2>
     <span class="inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider {% if status_kind == 'success' %}bg-emerald-200 text-emerald-900{% elif status_kind == 'failure' %}bg-rose-200 text-rose-900{% elif status_kind == 'queued' %}bg-amber-200 text-amber-900{% else %}bg-sky-200 text-sky-900{% endif %}">
-      {{ state }}
+      {{ status_label }}
     </span>
   </div>
   <p class="mt-2 text-sm">{{ message }}</p>
@@ -20,7 +20,7 @@
     <div class="flex items-center justify-between gap-3">
       <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500">Обратная связь кандидату</h3>
       {% if feedback_item.score_1_10 is not none %}
-      <span class="rounded-md bg-slate-900 px-2.5 py-1 text-xs font-bold text-white">Score: {{ feedback_item.score_1_10 }}/10</span>
+      <span class="rounded-md bg-slate-900 px-2.5 py-1 text-xs font-bold text-white">Оценка: {{ feedback_item.score_1_10 }}/10</span>
       {% endif %}
     </div>
 

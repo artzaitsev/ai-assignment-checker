@@ -7,6 +7,9 @@ from app.domain.models import AssignmentSnapshot
 
 COMPONENT_ID_CREATE = "api.create_assignment"
 COMPONENT_ID_LIST = "api.list_assignments"
+COMPONENT_ID_GET = "api.get_assignment"
+COMPONENT_ID_UPDATE = "api.update_assignment"
+COMPONENT_ID_DELETE = "api.delete_assignment"
 
 
 def _assignment_response_from_snapshot(
@@ -57,3 +60,49 @@ async def list_assignments_handler(
     return ListAssignmentsResponse(
         items=[_assignment_response_from_snapshot(item, include_task_schema=include_task_schema) for item in items]
     )
+
+
+async def get_assignment_handler(
+    deps: ApiDeps,
+    *,
+    assignment_public_id: str,
+    include_task_schema: bool,
+) -> AssignmentResponse | None:
+    assignment = await deps.repository.get_assignment_by_public_id(
+        assignment_public_id=assignment_public_id,
+        include_task_schema=include_task_schema,
+    )
+    if assignment is None:
+        return None
+    return _assignment_response_from_snapshot(assignment, include_task_schema=include_task_schema)
+
+
+async def update_assignment_handler(
+    deps: ApiDeps,
+    *,
+    assignment_public_id: str,
+    title: str,
+    description: str,
+    language: str,
+    task_schema: TaskSchema,
+    is_active: bool,
+) -> AssignmentResponse | None:
+    assignment = await deps.repository.update_assignment(
+        assignment_public_id=assignment_public_id,
+        title=title,
+        description=description,
+        language=language,
+        task_schema=task_schema,
+        is_active=is_active,
+    )
+    if assignment is None:
+        return None
+    return _assignment_response_from_snapshot(assignment, include_task_schema=True)
+
+
+async def delete_assignment_handler(
+    deps: ApiDeps,
+    *,
+    assignment_public_id: str,
+) -> bool:
+    return await deps.repository.delete_assignment(assignment_public_id=assignment_public_id)

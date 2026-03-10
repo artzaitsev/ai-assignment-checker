@@ -257,6 +257,9 @@ curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
 ## Candidate/Admin flow
 
 - Candidate flow: `/candidate/apply` -> выбор задания и загрузка файла -> `/candidate/apply/result/{submission_id}`;
+- Fixed candidate flow for one assignment: `/candidate/assignments/{assignment_public_id}/apply` -> загрузка файла -> `/candidate/apply/result/{submission_id}`;
+- Candidate template export: `/candidate/assignments/{assignment_public_id}/template.docx`;
+- Admin assignments flow: `/admin/assignments` -> добавить/отредактировать assignment -> скопировать публичную candidate-ссылку;
 - Admin flow: `/admin/submissions` -> фильтрация и просмотр деталей -> `Export CSV`;
 - export retrieval: `/exports/{id}/download`.
 

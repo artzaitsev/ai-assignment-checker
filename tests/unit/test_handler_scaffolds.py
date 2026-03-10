@@ -21,6 +21,7 @@ from app.domain.models import (
     TelegramLinkSettings,
     WorkItemClaim,
 )
+from app.domain.telegram_settings import TELEGRAM_DEFAULT_ASSIGNMENT_STREAM
 from app.repositories.stub import InMemoryWorkRepository
 from app.workers.handlers import deliver, evaluate, ingest_telegram, normalize
 from app.workers.handlers.deps import WorkerDeps
@@ -107,6 +108,16 @@ def test_ingest_telegram_handler_polls_updates() -> None:
     )
 
     async def _run() -> None:
+        assignment = await repository.create_assignment(
+            title="Telegram Assignment",
+            description="Desc",
+            language="ru",
+            task_schema=_task_schema(),
+        )
+        await repository.set_stream_cursor(
+            stream=TELEGRAM_DEFAULT_ASSIGNMENT_STREAM,
+            cursor=assignment.assignment_public_id,
+        )
         telegram.events.append(
             TelegramInboundEvent(
                 update_id="upd_001",
@@ -114,7 +125,7 @@ def test_ingest_telegram_handler_polls_updates() -> None:
                 telegram_user_id="tg_user_1",
                 kind="message",
                 command="/start",
-                text="/start asg_1",
+                text="/start",
             )
         )
 
@@ -125,7 +136,8 @@ def test_ingest_telegram_handler_polls_updates() -> None:
         assert "processed 1 telegram events" in result.detail
         assert telegram.sent_texts
         assert telegram.sent_texts[0][0] == "chat_1"
-        assert "/candidate/apply?token=" in telegram.sent_texts[0][1]
+        assert "/candidate/assignments/" in telegram.sent_texts[0][1]
+        assert "/apply?token=" in telegram.sent_texts[0][1]
 
     asyncio.run(_run())
 
@@ -156,6 +168,49 @@ def test_ingest_telegram_handler_idle_when_no_updates() -> None:
 
         assert result.success is True
         assert "no new telegram events" in result.detail
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_ingest_telegram_handler_skips_start_when_assignment_not_configured() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    telegram = StubTelegramClient()
+    llm = StubLLMClient()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=telegram,
+        llm=llm,
+        telegram_link_settings=TelegramLinkSettings(
+            public_web_base_url="https://portal.example.com",
+            signing_secret="test-secret-012345",
+            ttl_seconds=600,
+        ),
+    )
+
+    async def _run() -> None:
+        telegram.events.append(
+            TelegramInboundEvent(
+                update_id="upd_001a",
+                chat_id="chat_1a",
+                telegram_user_id="tg_user_1a",
+                kind="message",
+                command="/start",
+                text="/start",
+            )
+        )
+
+        claim = WorkItemClaim(item_id="poll-tick-1a", stage="raw", attempt=1)
+        result = await ingest_telegram.process_claim(deps, claim=claim)
+
+        assert result.success is True
+        assert "processed 0 telegram events" in result.detail
+        assert "skipped 1" in result.detail
+        assert telegram.sent_texts == []
 
     asyncio.run(_run())
 
@@ -398,6 +453,9 @@ def test_handlers_execute_skeleton_flow() -> None:
         assert isinstance(snapshot.get("chain_digest"), str)
         assert snapshot.get("mismatch_policy") == "warn-only"
         assert isinstance(snapshot.get("resolved_chain_spec"), dict)
+        diagnostics = snapshot.get("evaluation_diagnostics")
+        assert isinstance(diagnostics, dict)
+        assert diagnostics.get("fallback_used") is False
 
     asyncio.run(_run())
 
@@ -531,7 +589,7 @@ def test_feedback_handler_reads_persisted_feedback_with_optional_filter() -> Non
 
 
 @pytest.mark.unit
-def test_deliver_handler_requires_telegram_chat_mapping() -> None:
+def test_deliver_handler_skips_when_telegram_chat_mapping_is_missing() -> None:
     storage = StubStorageClient()
     artifact_repository = build_artifact_repository(storage=storage)
     repository = InMemoryWorkRepository()
@@ -574,13 +632,12 @@ def test_deliver_handler_requires_telegram_chat_mapping() -> None:
             deps,
             claim=WorkItemClaim(item_id=created.submission_id, stage="exports", attempt=1),
         )
-        assert result.success is False
-        assert result.error_code == "validation_error"
+        assert result.success is True
         assert telegram.sent_texts == []
         assert len(repository.deliveries) == 1
-        assert repository.deliveries[0]["status"] == "failed"
+        assert repository.deliveries[0]["status"] == "skipped"
         assert repository.deliveries[0]["attempts"] == 1
-        assert repository.deliveries[0]["last_error_code"] == "validation_error"
+        assert repository.deliveries[0]["last_error_code"] is None
 
     asyncio.run(_run())
 

@@ -16,20 +16,28 @@ async def export_results_handler(
     deps: ApiDeps,
     *,
     statuses: tuple[SubmissionStatus, ...] | None,
-    candidate_public_id: str | None,
-    assignment_public_id: str | None,
-    source_type: str | None,
-    sort_by: SubmissionSortBy,
-    sort_order: SortOrder,
-    limit: int,
-    offset: int,
+    candidate_public_id: str | None = None,
+    candidate_query: str | None = None,
+    assignment_public_id: str | None = None,
+    assignment_query: str | None = None,
+    score_min: int | None = None,
+    score_max: int | None = None,
+    source_type: str | None = None,
+    sort_by: SubmissionSortBy = SubmissionSortBy.CREATED_AT,
+    sort_order: SortOrder = SortOrder.DESC,
+    limit: int = 100,
+    offset: int = 0,
 ) -> ExportResultsResponse:
     """Build and persist CSV export from batch query of evaluated data."""
     items = await deps.repository.list_submissions(
         query=SubmissionListQuery(
             statuses=statuses,
             candidate_public_id=candidate_public_id,
+            candidate_query=candidate_query,
             assignment_public_id=assignment_public_id,
+            assignment_query=assignment_query,
+            score_min=score_min,
+            score_max=score_max,
             source_type=source_type,
             include=frozenset(
                 {

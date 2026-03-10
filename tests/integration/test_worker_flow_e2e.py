@@ -317,3 +317,91 @@ def test_worker_normalize_persists_office_docx_artifact() -> None:
         assert len(artifact.task_solutions) == 2
 
     asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_worker_deliver_keeps_evaluated_when_delivery_is_skipped() -> None:
+    async def _run() -> None:
+        repository = InMemoryWorkRepository()
+        storage = StubStorageClient()
+        artifact_repository = build_artifact_repository(storage=storage)
+        telegram = StubTelegramClient()
+        llm = StubLLMClient()
+        deps = WorkerDeps(
+            repository=repository,
+            artifact_repository=artifact_repository,
+            storage=storage,
+            telegram=telegram,
+            llm=llm,
+        )
+
+        candidate = await repository.create_candidate(first_name="No", last_name="Telegram")
+        assignment = await repository.create_assignment(
+            title="Flow Assignment",
+            description="Flow Description",
+            language="en",
+            task_schema=parse_task_schema(
+                {
+                    "schema_version": "task-criteria:v1",
+                    "tasks": [
+                        {
+                            "task_id": "task_main",
+                            "title": "Main task",
+                            "weight": 1.0,
+                            "criteria": [
+                                {"criterion_id": "correctness", "description": "c", "weight": 1.0},
+                            ],
+                        }
+                    ],
+                }
+            ),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="flow-e2e-no-tg",
+            initial_status="uploaded",
+        )
+        raw_ref = storage.put_bytes(
+            key=f"raw/{created.submission_id}/submission.txt",
+            payload=b"print('hello')",
+        )
+        await repository.link_artifact(
+            item_id=created.submission_id,
+            stage="raw",
+            artifact_ref=raw_ref,
+            artifact_version=None,
+        )
+
+        normalize_loop = WorkerLoop(
+            role="worker-normalize",
+            stage="normalized",
+            repository=repository,
+            process=build_process_handler("worker-normalize", deps),
+        )
+        evaluate_loop = WorkerLoop(
+            role="worker-evaluate",
+            stage="llm-output",
+            repository=repository,
+            process=build_process_handler("worker-evaluate", deps),
+        )
+        deliver_loop = WorkerLoop(
+            role="worker-deliver",
+            stage="exports",
+            repository=repository,
+            process=build_process_handler("worker-deliver", deps),
+        )
+
+        assert await normalize_loop.run_once() is True
+        assert await evaluate_loop.run_once() is True
+        assert await deliver_loop.run_once() is True
+
+        snapshot = await repository.get_submission(submission_id=created.submission_id)
+        assert snapshot is not None
+        assert snapshot.status == "evaluated"
+        assert telegram.sent_texts == []
+        assert repository.deliveries
+        assert repository.deliveries[-1]["status"] == "skipped"
+
+    asyncio.run(_run())

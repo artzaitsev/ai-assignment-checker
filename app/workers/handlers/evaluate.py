@@ -97,16 +97,18 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         tokens_output=result.tokens_output,
         latency_ms=result.latency_ms,
     )
+    chain_snapshot: dict[str, object] = {
+        "chain_digest": current_chain_digest,
+        "resolved_chain_spec": current_chain_payload,
+        "mismatch_policy": CHAIN_MISMATCH_POLICY,
+    }
+    if result.evaluation_diagnostics is not None:
+        chain_snapshot["evaluation_diagnostics"] = dict(result.evaluation_diagnostics)
+
     await deps.repository.persist_evaluation(
         submission_id=claim.item_id,
         score_1_10=result.score_1_10,
-        score_breakdown=result.score_breakdown.with_chain_snapshot(
-            {
-                "chain_digest": current_chain_digest,
-                "resolved_chain_spec": current_chain_payload,
-                "mismatch_policy": CHAIN_MISMATCH_POLICY,
-            }
-        ),
+        score_breakdown=result.score_breakdown.with_chain_snapshot(chain_snapshot),
         organizer_feedback=result.organizer_feedback,
         candidate_feedback=result.candidate_feedback,
         ai_assistance_likelihood=result.ai_assistance_likelihood,

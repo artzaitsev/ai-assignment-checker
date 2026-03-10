@@ -91,8 +91,10 @@ def verify_entry_token(
     return payload
 
 
-def build_candidate_apply_link(*, settings: TelegramLinkSettings, token: str) -> str:
+def build_candidate_apply_link(*, settings: TelegramLinkSettings, token: str, assignment_public_id: str | None = None) -> str:
     query = urlencode({"token": token})
+    if assignment_public_id:
+        return f"{settings.public_web_base_url}/candidate/assignments/{assignment_public_id}/apply?{query}"
     return f"{settings.public_web_base_url}/candidate/apply?{query}"
 
 

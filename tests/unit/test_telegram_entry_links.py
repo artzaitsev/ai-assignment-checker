@@ -69,11 +69,11 @@ def test_telegram_entry_token_rejects_expired_tokens() -> None:
 
 
 @pytest.mark.unit
-def test_build_candidate_apply_link_uses_fixed_path() -> None:
+def test_build_candidate_apply_link_uses_assignment_path_when_provided() -> None:
     settings = TelegramLinkSettings(
         public_web_base_url="https://portal.example.com",
         signing_secret="test-secret-012345",
         ttl_seconds=60,
     )
-    link = build_candidate_apply_link(settings=settings, token="abc.def")
-    assert link == "https://portal.example.com/candidate/apply?token=abc.def"
+    link = build_candidate_apply_link(settings=settings, token="abc.def", assignment_public_id="asg_123")
+    assert link == "https://portal.example.com/candidate/assignments/asg_123/apply?token=abc.def"

@@ -33,10 +33,12 @@ def form_context(
     *,
     assignments: list[AssignmentSnapshot],
     assignment_hint: str | None,
+    assignment_locked: bool = False,
 ) -> dict[str, object]:
     return {
         "assignments": assignments,
         "assignment_hint": assignment_hint,
+        "assignment_locked": assignment_locked,
     }
 
 
@@ -60,32 +62,35 @@ def result_panel_context(
     feedback_item: dict[str, object] | None,
 ) -> dict[str, object]:
     status_kind = "in_progress"
-    title = "Идет проверка"
+    title = "Проверяется"
     message = "Мы обрабатываем Вашу работу. Обновление происходит автоматически."
+    status_label = "проверяется"
     poll_enabled = True
 
     if state in _QUEUED_STATES:
         status_kind = "queued"
-        title = "Работа в очереди"
-        message = "Файл получен и поставлен в очередь на нормализацию."
+        title = "Проверяется"
+        message = "Мы проверяем Вашу работу. Обычно это занимает несколько минут."
     elif state in _IN_PROGRESS_STATES:
         status_kind = "in_progress"
-        title = "Идет проверка"
-        message = "Нормализация и оценка выполняются. Обычно это занимает до нескольких минут."
+        title = "Проверяется"
+        message = "Мы проверяем Вашу работу. Обычно это занимает несколько минут."
     elif state in _SUCCESS_STATES:
         status_kind = "success"
         title = "Проверка завершена"
         message = "Результаты готовы."
+        status_label = "готово"
         poll_enabled = feedback_item is None
     elif state in _FAILURE_STATES:
         status_kind = "failure"
         title = "Проверка завершилась с ошибкой"
         message = "Попробуйте отправить обновленную версию файла."
+        status_label = "ошибка"
         poll_enabled = False
 
     return {
         "submission_id": submission_id,
-        "state": state,
+        "status_label": status_label,
         "status_kind": status_kind,
         "title": title,
         "message": message,

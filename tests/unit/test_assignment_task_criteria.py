@@ -87,6 +87,59 @@ class _CapturingMultitaskLLM:
         return _MultitaskLLM().evaluate(request)
 
 
+@dataclass(frozen=True)
+class _WrappedPayloadLLM:
+    def evaluate(self, request: object) -> LLMClientResult:
+        del request
+        return LLMClientResult(
+            raw_text="",
+            raw_json={
+                "response": {
+                    "tasks": [
+                        {
+                            "task_id": "task_1",
+                            "criteria": [
+                                {"criterion_id": "correctness", "score": 8, "reason": "good"},
+                                {"criterion_id": "clarity", "score": 7, "reason": "ok"},
+                            ],
+                        },
+                        {
+                            "task_id": "task_2",
+                            "criteria": [
+                                {"criterion_id": "coverage", "score": 9, "reason": "strong"},
+                            ],
+                        },
+                    ],
+                    "organizer_feedback": {"strengths": ["s"], "issues": ["i"], "recommendations": ["r"]},
+                    "candidate_feedback": {
+                        "summary": "sum",
+                        "what_went_well": ["w"],
+                        "what_to_improve": ["m"],
+                    },
+                    "ai_assistance": {"likelihood": 0.2, "confidence": 0.7, "disclaimer": "d"},
+                }
+            },
+            tokens_input=11,
+            tokens_output=12,
+            latency_ms=2,
+        )
+
+
+@dataclass(frozen=True)
+class _BrokenPayloadLLM:
+    def evaluate(self, request: object) -> LLMClientResult:
+        del request
+        return LLMClientResult(
+            raw_text="",
+            raw_json={
+                "candidate_feedback": {"summary": "partial"},
+            },
+            tokens_input=1,
+            tokens_output=1,
+            latency_ms=1,
+        )
+
+
 @pytest.mark.unit
 def test_criteria_schema_validation_rejects_non_normalized_weights() -> None:
     invalid = _valid_schema()
@@ -213,3 +266,59 @@ def test_task_scores_summary_format_is_stable_and_ascii() -> None:
     export = prepare_export(PrepareExportCommand(items=[item])).export_rows[0]
     assert export.task_scores_summary == "task_1:7;task_2:9"
     assert all(ord(ch) < 128 for ch in export.task_scores_summary)
+
+
+@pytest.mark.unit
+def test_multitask_evaluate_repairs_wrapped_payload_shape() -> None:
+    chain = load_chain_spec(file_path="app/eval/chains/chain.v1.yaml")
+    result = evaluate_submission(
+        EvaluateSubmissionCommand(
+            submission_id="sub_00000000000000000000000000",
+            normalized_artifact=NormalizedArtifact(
+                submission_public_id="sub_00000000000000000000000000",
+                assignment_public_id="asg_00000000000000000000000000",
+                source_type="api_upload",
+                submission_text="synthetic answer",
+                task_solutions=[],
+                unmapped_text="",
+            ),
+            assignment_title="Multitask",
+            assignment_description="Synthetic",
+            assignment_language="en",
+            task_schema=parse_task_schema(_valid_schema()),
+            chain_spec=chain,
+            effective_model="model:test",
+        ),
+        llm=_WrappedPayloadLLM(),
+    )
+
+    assert result.score_1_10 == 8
+    assert result.evaluation_diagnostics is not None
+    assert result.evaluation_diagnostics["repair_applied"] is True
+    assert result.evaluation_diagnostics["fallback_used"] is False
+
+
+@pytest.mark.unit
+def test_multitask_evaluate_rejects_invalid_payload_after_bounded_repair() -> None:
+    chain = load_chain_spec(file_path="app/eval/chains/chain.v1.yaml")
+    with pytest.raises(ValueError, match="failed schema validation"):
+        evaluate_submission(
+            EvaluateSubmissionCommand(
+                submission_id="sub_00000000000000000000000000",
+                normalized_artifact=NormalizedArtifact(
+                    submission_public_id="sub_00000000000000000000000000",
+                    assignment_public_id="asg_00000000000000000000000000",
+                    source_type="api_upload",
+                    submission_text="synthetic answer",
+                    task_solutions=[],
+                    unmapped_text="",
+                ),
+                assignment_title="Multitask",
+                assignment_description="Synthetic",
+                assignment_language="en",
+                task_schema=parse_task_schema(_valid_schema()),
+                chain_spec=chain,
+                effective_model="model:test",
+            ),
+            llm=_BrokenPayloadLLM(),
+        )
