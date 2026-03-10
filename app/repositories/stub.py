@@ -567,8 +567,16 @@ class InMemoryWorkRepository:
             raise DomainInvariantError("claim ownership is stale")
 
         if success:
-            self.transitions.append((item_id, lifecycle.in_progress_state, lifecycle.success_state))
-            row.status = lifecycle.success_state
+            target_state = lifecycle.success_state
+            if stage == "exports":
+                last_delivery = next(
+                    (delivery for delivery in reversed(self.deliveries) if delivery["submission_id"] == item_id),
+                    None,
+                )
+                if last_delivery is not None and last_delivery.get("status") == "skipped":
+                    target_state = lifecycle.source_state
+            self.transitions.append((item_id, lifecycle.in_progress_state, target_state))
+            row.status = target_state
             row.last_error_code = None
             row.last_error_message = None
         else:

@@ -60,6 +60,7 @@ SQL_CREATE_SOURCE = load_sql("create_source.sql")
 SQL_GET_SUBMISSION = load_sql("get_submission.sql")
 SQL_HEARTBEAT_CLAIM = load_sql("heartbeat_claim.sql")
 SQL_FINALIZE_SUCCESS = load_sql("finalize_success.sql")
+SQL_FINALIZE_SUCCESS_EXPORTS = load_sql("finalize_success_exports.sql")
 SQL_FINALIZE_FAILURE_RETRY = load_sql("finalize_failure_retry.sql")
 SQL_FINALIZE_FAILURE_DEAD = load_sql("finalize_failure_dead_letter.sql")
 SQL_FINALIZE_FAILURE_TERMINAL = load_sql("finalize_failure_terminal.sql")
@@ -969,13 +970,23 @@ class PostgresWorkRepository:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 if success:
-                    row = await conn.fetchrow(
-                        SQL_FINALIZE_SUCCESS,
-                        item_id,
-                        lifecycle.in_progress_state,
-                        worker_id,
-                        lifecycle.success_state,
-                    )
+                    if stage == "exports":
+                        row = await conn.fetchrow(
+                            SQL_FINALIZE_SUCCESS_EXPORTS,
+                            item_id,
+                            lifecycle.in_progress_state,
+                            worker_id,
+                            lifecycle.success_state,
+                            lifecycle.source_state,
+                        )
+                    else:
+                        row = await conn.fetchrow(
+                            SQL_FINALIZE_SUCCESS,
+                            item_id,
+                            lifecycle.in_progress_state,
+                            worker_id,
+                            lifecycle.success_state,
+                        )
                     if row is None:
                         raise DomainInvariantError("finalize rejected by ownership guard")
                     return
