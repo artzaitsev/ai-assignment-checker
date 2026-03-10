@@ -10,12 +10,15 @@ from app.domain.error_taxonomy import (
 @pytest.mark.unit
 def test_canonical_error_codes_are_enforced() -> None:
     assert is_canonical_error_code("schema_validation_failed") is True
+    assert is_canonical_error_code("file_parse_failed") is True
     assert is_canonical_error_code("unknown_error") is False
 
 
 @pytest.mark.unit
 def test_stage_error_mapping_restricts_invalid_codes() -> None:
     assert resolve_stage_error(stage="normalized", code="schema_validation_failed") == "schema_validation_failed"
+    assert resolve_stage_error(stage="normalized", code="file_parse_failed") == "file_parse_failed"
+    assert resolve_stage_error(stage="normalized", code="llm_provider_unavailable") == "llm_provider_unavailable"
     assert resolve_stage_error(stage="normalized", code="delivery_transport_failed") == "internal_error"
 
 

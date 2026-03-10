@@ -1,0 +1,13 @@
+{
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Fix type mismatch in WHERE clause."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add LIMIT and supporting index to reduce scanned rows."
+    }
+  ],
+  "unmapped_text": ""
+}

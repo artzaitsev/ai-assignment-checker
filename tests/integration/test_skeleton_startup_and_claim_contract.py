@@ -66,3 +66,6 @@ def test_worker_background_loop_runs_without_external_side_effects() -> None:
     assert payload["worker_metrics"]["started"] is True
     assert payload["worker_metrics"]["ticks_total"] >= 2
     assert payload["worker_metrics"]["claims_total"] >= 2
+    assert "stage_duration_ms_total" in payload["worker_metrics"]
+    assert "stage_success_total" in payload["worker_metrics"]
+    assert "stage_error_total" in payload["worker_metrics"]

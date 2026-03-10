@@ -1,0 +1,3 @@
+{
+  "text": "Forwarded screenshot. Task 1: replace SELECT * with explicit columns to reduce payload. Task 2: add an index on email for the lookup query. Extra note: keep the projection stable for exports."
+}

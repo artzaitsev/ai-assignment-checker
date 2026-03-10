@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from hashlib import sha256
+import json
+import re
 
 from app.domain.contracts import STORAGE_PREFIXES
 from app.domain.dto import LLMClientRequest, LLMClientResult
@@ -64,6 +66,15 @@ class StubLLMClient:
 
     def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
         self.calls.append(request)
+        if request.system_prompt.startswith("NORMALIZATION_PARSER"):
+            parser_output = _build_normalization_parser_output(request.user_prompt)
+            return LLMClientResult(
+                raw_text=json.dumps(parser_output, ensure_ascii=False),
+                raw_json=parser_output,
+                tokens_input=64,
+                tokens_output=96,
+                latency_ms=80,
+            )
         task_schema = _extract_task_schema_from_prompt(request.user_prompt)
         tasks = _default_task_scores(task_schema)
         default_json: dict[str, object] = {
@@ -164,3 +175,58 @@ def _default_task_scores(task_schema: dict[str, object] | None) -> list[dict[str
             ],
         }
     ]
+
+
+def _build_normalization_parser_output(payload_raw: str) -> dict[str, object]:
+    try:
+        payload = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        return {"task_solutions": [], "unmapped_text": ""}
+    if not isinstance(payload, dict):
+        return {"task_solutions": [], "unmapped_text": ""}
+
+    submission_text = payload.get("submission_text")
+    tasks = payload.get("assignment_tasks")
+    if not isinstance(submission_text, str) or not isinstance(tasks, list):
+        return {"task_solutions": [], "unmapped_text": ""}
+
+    task_ids: list[str] = []
+    for task in tasks:
+        if isinstance(task, dict):
+            task_id = task.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                task_ids.append(task_id)
+    segments = _split_by_task_markers(submission_text)
+    solutions: list[dict[str, str]] = []
+    for index, task_id in enumerate(task_ids, start=1):
+        answer = segments.get(index)
+        if answer is None:
+            answer = _fallback_task_answer(submission_text, task_index=index, total_tasks=len(task_ids))
+        solutions.append({"task_id": task_id, "answer": answer})
+    return {"task_solutions": solutions, "unmapped_text": ""}
+
+
+def _split_by_task_markers(submission_text: str) -> dict[int, str]:
+    matches = list(re.finditer(r"\bTask\s*(\d+)\s*:\s*", submission_text, flags=re.IGNORECASE))
+    segments: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        task_num = int(match.group(1))
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(submission_text)
+        chunk = submission_text[start:end].strip(" .\n\t")
+        if task_num in segments:
+            merged = f"{segments[task_num]} {chunk}".strip()
+            segments[task_num] = merged
+        else:
+            segments[task_num] = chunk
+    return segments
+
+
+def _fallback_task_answer(submission_text: str, *, task_index: int, total_tasks: int) -> str:
+    parts = [item.strip() for item in re.split(r"[.;]\s+", submission_text) if item.strip()]
+    if not parts:
+        return ""
+    position = min(task_index - 1, len(parts) - 1)
+    if total_tasks > 1 and len(parts) >= total_tasks:
+        position = task_index - 1
+    return parts[position]

@@ -58,6 +58,9 @@ class LLMRuntimeSettings:
     api_key: str
     base_url: str
     model: str
+    request_timeout_seconds: float
+    request_max_retries: int
+    request_retry_backoff_ms: int
 
 
 def integration_mode_from_env() -> str:
@@ -108,6 +111,7 @@ def _strict_role_validators(role_name: str) -> tuple[tuple[str, Callable[[], obj
         "worker-normalize": (
             ("database", database_settings_from_env),
             ("s3", s3_settings_from_env),
+            ("llm", llm_settings_from_env),
         ),
         "worker-evaluate": (
             ("database", database_settings_from_env),
@@ -196,10 +200,26 @@ def llm_settings_from_env() -> LLMRuntimeSettings:
     if errors:
         raise ValueError("; ".join(errors))
 
+    request_timeout_seconds = _read_optional_positive_float(
+        "LLM_REQUEST_TIMEOUT_SECONDS",
+        default=180.0,
+    )
+    request_max_retries = _read_optional_non_negative_int(
+        "LLM_REQUEST_MAX_RETRIES",
+        default=2,
+    )
+    request_retry_backoff_ms = _read_optional_positive_int(
+        "LLM_REQUEST_RETRY_BACKOFF_MS",
+        default=1000,
+    )
+
     return LLMRuntimeSettings(
         api_key=required_values["LLM_API_KEY"],
         base_url=base_url,
         model=required_values["LLM_MODEL"],
+        request_timeout_seconds=request_timeout_seconds,
+        request_max_retries=request_max_retries,
+        request_retry_backoff_ms=request_retry_backoff_ms,
     )
 
 
@@ -226,6 +246,45 @@ def _validate_http_url(*, value: str, env_name: str) -> None:
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{env_name} must be an absolute http(s) URL")
+
+
+def _read_optional_positive_float(name: str, *, default: float) -> float:
+    raw = os_environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive number") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return parsed
+
+
+def _read_optional_positive_int(name: str, *, default: int) -> int:
+    raw = os_environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return parsed
+
+
+def _read_optional_non_negative_int(name: str, *, default: int) -> int:
+    raw = os_environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return parsed
 
 def telegram_link_settings_from_env() -> TelegramLinkSettings:
     base_url = os_environ.get("PUBLIC_WEB_BASE_URL", "http://localhost:8000").strip().rstrip("/")

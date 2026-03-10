@@ -78,6 +78,15 @@ class _MultitaskLLM:
         )
 
 
+@dataclass
+class _CapturingMultitaskLLM:
+    calls: list[object]
+
+    def evaluate(self, request: object) -> LLMClientResult:
+        self.calls.append(request)
+        return _MultitaskLLM().evaluate(request)
+
+
 @pytest.mark.unit
 def test_criteria_schema_validation_rejects_non_normalized_weights() -> None:
     invalid = _valid_schema()
@@ -100,8 +109,9 @@ def test_multitask_evaluate_produces_deterministic_task_and_overall_scores() -> 
                 submission_public_id="sub_00000000000000000000000000",
                 assignment_public_id="asg_00000000000000000000000000",
                 source_type="api_upload",
-                content_markdown="synthetic answer",
-                normalization_metadata={},
+                submission_text="synthetic answer",
+                task_solutions=[],
+                unmapped_text="",
             ),
             assignment_title="Multitask",
             assignment_description="Synthetic",
@@ -116,6 +126,38 @@ def test_multitask_evaluate_produces_deterministic_task_and_overall_scores() -> 
     assert result.score_breakdown.task_order() == ["task_1", "task_2"]
     assert result.score_breakdown.task_scores() == {"task_1": 8, "task_2": 9}
     assert result.score_1_10 == 8
+
+
+@pytest.mark.unit
+def test_multitask_evaluate_prompt_includes_structured_and_fallback_normalized_context() -> None:
+    chain = load_chain_spec(file_path="app/eval/chains/chain.v1.yaml")
+    llm = _CapturingMultitaskLLM(calls=[])
+    evaluate_submission(
+        EvaluateSubmissionCommand(
+            submission_id="sub_00000000000000000000000000",
+            normalized_artifact=NormalizedArtifact(
+                submission_public_id="sub_00000000000000000000000000",
+                assignment_public_id="asg_00000000000000000000000000",
+                source_type="api_upload",
+                submission_text="full submission text",
+                task_solutions=[{"task_id": "task_1", "answer": "structured answer"}],
+                unmapped_text="fallback fragment",
+            ),
+            assignment_title="Multitask",
+            assignment_description="Synthetic",
+            assignment_language="en",
+            task_schema=parse_task_schema(_valid_schema()),
+            chain_spec=chain,
+            effective_model="model:test",
+        ),
+        llm=llm,
+    )
+
+    assert llm.calls
+    prompt = getattr(llm.calls[0], "user_prompt")
+    assert "full submission text" in prompt
+    assert '"task_id": "task_1"' in prompt
+    assert "fallback fragment" in prompt
 
 
 @pytest.mark.unit

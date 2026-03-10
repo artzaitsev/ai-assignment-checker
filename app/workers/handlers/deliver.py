@@ -58,11 +58,17 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             source_type=CandidateSourceType.TELEGRAM_CHAT,
         )
         if chat_id is None:
+            error_code = resolve_stage_error(stage="exports", code="validation_error")
+            await _persist_failed_delivery(
+                deps,
+                claim=claim,
+                error_code=error_code,
+            )
             return ProcessResult(
                 success=False,
                 detail=f"telegram_chat mapping is missing for submission: {claim.item_id}",
-                error_code=resolve_stage_error(stage="exports", code="validation_error"),
-                retry_classification=classify_error(resolve_stage_error(stage="exports", code="validation_error")),
+                error_code=error_code,
+                retry_classification=classify_error(error_code),
             )
 
         try:
@@ -72,6 +78,11 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             )
         except TelegramRetryableError as exc:
             error_code = resolve_stage_error(stage="exports", code="delivery_transport_failed")
+            await _persist_failed_delivery(
+                deps,
+                claim=claim,
+                error_code=error_code,
+            )
             return ProcessResult(
                 success=False,
                 detail=str(exc),
@@ -80,6 +91,11 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             )
         except TelegramNonRetryableError as exc:
             error_code = resolve_stage_error(stage="exports", code="validation_error")
+            await _persist_failed_delivery(
+                deps,
+                claim=claim,
+                error_code=error_code,
+            )
             return ProcessResult(
                 success=False,
                 detail=str(exc),
@@ -88,6 +104,11 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             )
         except Exception as exc:  # pragma: no cover - concrete client behavior
             error_code = resolve_stage_error(stage="exports", code="delivery_transport_failed")
+            await _persist_failed_delivery(
+                deps,
+                claim=claim,
+                error_code=error_code,
+            )
             return ProcessResult(
                 success=False,
                 detail=str(exc),
@@ -100,10 +121,15 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             channel="telegram",
             status="sent",
             external_message_id=external_message_id,
-            attempts=1,
+            attempts=claim.attempt,
         )
     except KeyError as exc:
         error_code = resolve_stage_error(stage="exports", code="artifact_missing")
+        await _persist_failed_delivery(
+            deps,
+            claim=claim,
+            error_code=error_code,
+        )
         return ProcessResult(
             success=False,
             detail=str(exc),
@@ -112,6 +138,11 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
         )
     except ValueError as exc:
         error_code = resolve_stage_error(stage="exports", code="schema_validation_failed")
+        await _persist_failed_delivery(
+            deps,
+            claim=claim,
+            error_code=error_code,
+        )
         return ProcessResult(
             success=False,
             detail=str(exc),
@@ -122,4 +153,19 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
     return ProcessResult(
         success=True,
         detail="delivery notification sent",
+    )
+
+
+async def _persist_failed_delivery(
+    deps: WorkerDeps,
+    *,
+    claim: WorkItemClaim,
+    error_code: str,
+) -> None:
+    await deps.repository.persist_delivery(
+        submission_id=claim.item_id,
+        channel="telegram",
+        status="failed",
+        attempts=claim.attempt,
+        last_error_code=error_code,
     )

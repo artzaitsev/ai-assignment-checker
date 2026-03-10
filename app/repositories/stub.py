@@ -330,6 +330,8 @@ class InMemoryWorkRepository:
                         model=str(llm_row["model"]) if llm_row else None,
                         spec_version=str(llm_row["spec_version"]) if llm_row else None,
                         response_language=str(llm_row["response_language"]) if llm_row else None,
+                        ai_assistance_likelihood=_as_float(eval_row.get("ai_assistance_likelihood") if eval_row else None),
+                        ai_assistance_confidence=_as_float(eval_row.get("ai_assistance_confidence") if eval_row else None),
                     )
                     if SubmissionFieldGroup.EVALUATION in include
                     else None,
@@ -598,6 +600,12 @@ class InMemoryWorkRepository:
 def _as_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
+    return None
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
     return None
 
 

@@ -31,6 +31,11 @@ class WorkerMetrics(BaseModel):
     claims_total: int
     idle_ticks_total: int
     errors_total: int
+    stage_duration_ms_total: dict[str, int] = Field(default_factory=dict)
+    stage_success_total: dict[str, int] = Field(default_factory=dict)
+    stage_retry_total: dict[str, int] = Field(default_factory=dict)
+    stage_terminal_failure_total: dict[str, int] = Field(default_factory=dict)
+    stage_error_total: dict[str, int] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):

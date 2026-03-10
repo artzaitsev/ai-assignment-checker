@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_010",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "Assignment copy below is typed natively. Task 1: fix the JOIN predicate in the report query. Candidate note: use ON o.user_id = u.id and remove the accidental cross join. Task 2 answer is shown in the attached screenshot fragment. Scanned addendum. Photo fragment. Task 2 answer: use a partial index on active rows only. That keeps the index smaller and speeds up the filtered query.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Use ON o.user_id = u.id and remove the accidental cross join."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Use a partial index on active rows only."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

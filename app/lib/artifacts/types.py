@@ -16,12 +16,14 @@ class NormalizedArtifact(BaseModel):
     assignment_public_id: str
     # Which ingress path created the source payload.
     source_type: Literal["api_upload", "telegram"]
-    # Canonical text used as LLM input after format-specific extraction.
-    content_markdown: str
-    # Free-form trace data from normalization (parser, mime, warnings, etc.).
-    normalization_metadata: dict[str, object]
+    # Canonical text used as downstream parser/evaluation input.
+    submission_text: str
+    # Parser-mapped answers keyed by assignment task_id.
+    task_solutions: list[dict[str, str]]
+    # Fragments that cannot be mapped confidently to assignment tasks.
+    unmapped_text: str
     # Contract version for readers to branch parsing/migrations when needed.
-    schema_version: str = Field(default="normalized:v1")
+    schema_version: str = Field(default="normalized:v2")
 
 
 class ExportRowArtifact(BaseModel):

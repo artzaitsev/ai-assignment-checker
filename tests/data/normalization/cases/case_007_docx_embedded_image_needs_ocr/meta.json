@@ -1,0 +1,10 @@
+{
+  "case_id": "case_007_docx_embedded_image_needs_ocr",
+  "assignment_fixture": "assignments/assignment_db_review_v1.json",
+  "input_file": "input.docx",
+  "input_format": "docx",
+  "ocr_mode": "required",
+  "ocr_stub": "ocr_stub.json",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}

@@ -61,6 +61,11 @@ def evaluate_submission(
     llm: LLMClient,
 ) -> EvaluateSubmissionResult:
     """Evaluate normalized content using chain spec and deterministic scoring."""
+    normalized_payload = _build_normalized_prompt_payload(
+        task_solutions=cmd.normalized_artifact.task_solutions,
+        submission_text=cmd.normalized_artifact.submission_text,
+        unmapped_text=cmd.normalized_artifact.unmapped_text,
+    )
     prompt_inputs: dict[str, object] = {
         "assignment": {
             "title": cmd.assignment_title,
@@ -68,9 +73,7 @@ def evaluate_submission(
             "language": cmd.assignment_language,
             "task_schema": cmd.task_schema.to_dict(),
         },
-        "normalized": {
-            "content_markdown": cmd.normalized_artifact.content_markdown,
-        },
+        "normalized": normalized_payload,
     }
     user_prompt = render_user_prompt(
         template=cmd.chain_spec.prompts.user_template,
@@ -330,3 +333,28 @@ def _require_score(data: dict[str, object], key: str, path: str) -> int:
     if value < 1 or value > 10:
         raise ValueError(f"{path} must be between 1 and 10")
     return value
+
+
+def _build_normalized_prompt_payload(
+    *,
+    task_solutions: list[dict[str, str]],
+    submission_text: str,
+    unmapped_text: str,
+) -> dict[str, object]:
+    mapped = [item for item in task_solutions if isinstance(item, dict)]
+    mapped_non_empty = [
+        item
+        for item in mapped
+        if isinstance(item.get("answer"), str) and item.get("answer", "").strip()
+    ]
+
+    fallback_context = submission_text
+    if mapped_non_empty and unmapped_text.strip():
+        fallback_context = unmapped_text
+
+    return {
+        "submission_text": submission_text,
+        "task_solutions": mapped,
+        "unmapped_text": unmapped_text,
+        "fallback_context": fallback_context,
+    }

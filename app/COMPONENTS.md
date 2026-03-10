@@ -23,7 +23,7 @@
 - `domain.submission.create` -> `app/domain/use_cases/submissions.py`
 - `domain.submission.transition_state` -> `app/domain/use_cases/status.py`
 - `domain.artifact.link` -> `app/domain/use_cases/status.py`
-- `domain.normalize.payload` -> `app/domain/use_cases/normalize.py`
+- `domain.normalize.payload` -> `app/domain/use_cases/normalize.py` (plain-text detection, decoding, parser validation, normalized artifact assembly)
 - `domain.llm.evaluate` -> `app/domain/use_cases/llm_eval.py`
 - `domain.feedback.build` -> `app/domain/use_cases/deliver.py`
 - `domain.export.prepare` -> `app/domain/use_cases/deliver.py`
@@ -39,6 +39,8 @@
   - Основные файлы: `app/domain/use_cases/telegram_entry_links.py`, `app/workers/handlers/ingest_telegram.py`, `app/services/runtime_settings.py`
 - `track.evaluation`: контракт normalized, выполнение chain-spec, evaluate use-case, scoring/reproducibility
   - Основные файлы: `app/domain/evaluation_chain.py`, `app/domain/evaluation_contracts.py`, `app/domain/scoring.py`, `app/domain/use_cases/llm_eval.py`, `app/workers/handlers/evaluate.py`
+- `track.normalization`: plain-text normalization contract, parser-backed extraction flow, normalized artifact assembly
+  - Основные файлы: `app/domain/use_cases/normalize.py`, `app/workers/handlers/normalize.py`, `app/lib/artifacts/types.py`, `app/lib/artifacts/codecs.py`
 - `track.delivery-export`: контракты feedback/export и формирование delivery stage
   - Основные файлы: `app/domain/use_cases/deliver.py`, `app/workers/handlers/deliver.py`, `app/api/handlers/exports.py`
 - `track.quality`: acceptance checks и ответственность за test matrix

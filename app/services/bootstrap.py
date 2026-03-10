@@ -143,11 +143,14 @@ def _build_telegram_client(*, role: RuntimeRole, integration_mode: str) -> Teleg
 
 
 def _build_llm_client(*, role: RuntimeRole, integration_mode: str) -> LLMClient:
-    if integration_mode == INTEGRATION_MODE_REAL and role.name == "worker-evaluate":
+    if integration_mode == INTEGRATION_MODE_REAL and role.name in {"worker-normalize", "worker-evaluate"}:
         llm_settings = llm_settings_from_env()
         return OpenAICompatibleLLMClient(
             api_key=llm_settings.api_key,
             base_url=llm_settings.base_url,
             model=llm_settings.model,
+            request_timeout_seconds=llm_settings.request_timeout_seconds,
+            request_max_retries=llm_settings.request_max_retries,
+            request_retry_backoff_ms=llm_settings.request_retry_backoff_ms,
         )
     return StubLLMClient()

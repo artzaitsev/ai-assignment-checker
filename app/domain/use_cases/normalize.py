@@ -1,32 +1,843 @@
 from __future__ import annotations
 
-from pydantic import ValidationError
+import io
+import json
+import logging
+import re
+import xml.etree.ElementTree as ET
+from collections.abc import Mapping
+from typing import Literal
+from zipfile import BadZipFile, ZipFile
 
+from pydantic import ValidationError
+from pypdf import PdfReader
+
+from app.domain.contracts import LLMClient
+from app.domain.dto import (
+    LLMClientRequest,
+    NormalizePayloadCommand,
+    NormalizePayloadResult,
+    PdfExtractionResult,
+    PdfOCRProvider,
+    PdfPageExtractionResult,
+    NormalizationParserInput,
+    NormalizationParserOutput,
+    NormalizationTaskSolution,
+    OfficeExtractionResult,
+)
 from app.lib.artifacts.types import NormalizedArtifact
-from app.domain.dto import NormalizePayloadCommand, NormalizePayloadResult
 
 COMPONENT_ID = "domain.normalize.payload"
+logger = logging.getLogger("runtime")
+_TEXT_MIME_HINTS = ("text/", "application/json", "application/xml")
+_DOCX_MIME_HINTS = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+}
+_ODT_MIME_HINTS = {
+    "application/vnd.oasis.opendocument.text",
+    "application/x-vnd.oasis.opendocument.text",
+}
+_DOCX_NS = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+}
+_ODT_NS = {
+    "draw": "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0",
+    "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+    "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+    "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+}
+_DOCX_DRAWING_TAG = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"
+_DOCX_OBJECT_TAG = "{urn:schemas-microsoft-com:office:office}OLEObject"
+_DOCX_PICT_TAG = "{urn:schemas-microsoft-com:vml}shape"
+_ODT_IMAGE_TAG = "{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}image"
+_SUPPORTED_OFFICE_FORMATS = {"docx", "odt"}
+_PARSE_FAILED_MESSAGE = "Supported file format could not be parsed."
+_PDF_MIME_HINTS = {
+    "application/pdf",
+    "application/x-pdf",
+}
+_PDF_MAX_PAGES = 64
+_PDF_MAX_CHARS = 120_000
+_PDF_MIN_PAGE_TEXT_CHARS = 48
+_PDF_MIN_TOTAL_TEXT_CHARS = 80
+_PDF_PAGE_DELIMITER_TEMPLATE = "\n\n--- page {page} ---\n\n"
+_NORMALIZATION_PARSER_SYSTEM_PROMPT = "NORMALIZATION_PARSER: return strict JSON with task_solutions[] and unmapped_text"
+_NORMALIZATION_MALFORMED_JSON_REPAIR_SYSTEM_PROMPT = (
+    "NORMALIZATION_PARSER_REPAIR: repair malformed JSON and return strict JSON object "
+    "with task_solutions[] and unmapped_text"
+)
 
 
-def normalize_payload(cmd: NormalizePayloadCommand) -> NormalizePayloadResult:
-    """Build a schema-valid normalized artifact reference and version."""
+def normalize_payload(
+    cmd: NormalizePayloadCommand,
+    *,
+    llm: LLMClient,
+    pdf_ocr_provider: PdfOCRProvider | None = None,
+) -> NormalizePayloadResult:
+    """Build normalized:v2 artifact for supported plain-text and office submissions."""
+    source_kind = _detect_submission_kind(
+        filename=cmd.filename,
+        persisted_mime=cmd.persisted_mime,
+        payload=cmd.raw_payload,
+    )
+
+    office_extraction: OfficeExtractionResult | None = None
+    pdf_extraction: PdfExtractionResult | None = None
+    submission_text: str
+    if source_kind == "plain_text":
+        submission_text = _normalize_submission_text(_decode_plain_text(cmd.raw_payload))
+    elif source_kind == "docx" or source_kind == "odt":
+        office_extraction = _extract_office_document(payload=cmd.raw_payload, file_format=source_kind)
+        submission_text = office_extraction.submission_text
+    else:
+        pdf_extraction = _extract_pdf_submission(payload=cmd.raw_payload, pdf_ocr_provider=pdf_ocr_provider)
+        submission_text = _assemble_pdf_submission_text(pdf_extraction.pages)
+
+    parser_input = NormalizationParserInput(
+        assignment_public_id=cmd.assignment_public_id,
+        language=cmd.assignment_language,
+        tasks=cmd.assignment_tasks,
+        submission_text=submission_text,
+    )
+    parser_output = _invoke_normalization_parser(parser_input=parser_input, llm=llm)
+
     try:
-        # Contract-validation scaffold: values below are placeholders until
-        # real normalization reads assignment/source/content from repositories.
         normalized_artifact = NormalizedArtifact(
             submission_public_id=cmd.submission_id,
-            assignment_public_id="asg_00000000000000000000000000",
-            source_type="api_upload",
-            content_markdown=f"# normalized\n\nsource: {cmd.artifact_ref}",
-            normalization_metadata={"producer": COMPONENT_ID},
-            schema_version="normalized:v1",
+            assignment_public_id=cmd.assignment_public_id,
+            source_type=cmd.source_type,
+            submission_text=submission_text,
+            task_solutions=[{"task_id": item.task_id, "answer": item.answer} for item in parser_output.task_solutions],
+            unmapped_text=parser_output.unmapped_text,
+            schema_version="normalized:v2",
         )
     except ValidationError as exc:
         raise ValueError("normalized artifact schema validation failed") from exc
 
-    # Artifact key convention is fixed by contract; producer may later derive
-    # a richer object key (e.g. with attempt/version suffix) without changing prefix.
     return NormalizePayloadResult(
         normalized_artifact=normalized_artifact,
-        schema_version="normalized:v1",
+        schema_version="normalized:v2",
+        office_extraction=office_extraction,
+        pdf_extraction=pdf_extraction,
     )
+
+
+def _detect_submission_kind(*, filename: str, persisted_mime: str | None, payload: bytes) -> Literal["plain_text", "docx", "odt", "pdf"]:
+    signature_kind = _sniff_office_package_format(payload)
+    if signature_kind is not None:
+        return signature_kind
+
+    if _is_pdf_payload(filename=filename, persisted_mime=persisted_mime, payload=payload):
+        return "pdf"
+
+    office_hint = _office_format_from_extension(filename) or _office_format_from_mime(persisted_mime)
+    if office_hint is not None and payload.startswith(b"PK"):
+        return office_hint
+
+    if _is_supported_plain_text(filename=filename, persisted_mime=persisted_mime, payload=payload):
+        return "plain_text"
+    raise ValueError("unsupported submission format")
+
+
+def _is_pdf_payload(*, filename: str, persisted_mime: str | None, payload: bytes) -> bool:
+    if payload.startswith(b"%PDF"):
+        return True
+    normalized_name = filename.strip().lower()
+    if normalized_name.endswith(".pdf"):
+        return True
+    if isinstance(persisted_mime, str) and persisted_mime.strip().lower() in _PDF_MIME_HINTS:
+        return True
+    return False
+
+
+def _is_supported_plain_text(*, filename: str, persisted_mime: str | None, payload: bytes) -> bool:
+    normalized_name = filename.strip().lower()
+    extension = normalized_name.rsplit(".", maxsplit=1)[1] if "." in normalized_name else ""
+    suffixless = "." not in normalized_name
+    extension_allowed = extension in {"txt", "md"}
+    mime_hint_allowed = isinstance(persisted_mime, str) and persisted_mime.strip().lower().startswith(_TEXT_MIME_HINTS)
+    candidate = extension_allowed or suffixless or bool(mime_hint_allowed)
+    return candidate and _sniff_plain_text_bytes(payload)
+
+
+def _sniff_plain_text_bytes(payload: bytes) -> bool:
+    if not payload:
+        return True
+    if b"\x00" in payload:
+        return False
+    control_bytes = 0
+    for value in payload:
+        if value in (9, 10, 13):
+            continue
+        if value < 32:
+            control_bytes += 1
+    if control_bytes / max(1, len(payload)) > 0.02:
+        return False
+    try:
+        _decode_plain_text(payload)
+    except ValueError:
+        return False
+    return True
+
+
+def _decode_plain_text(payload: bytes) -> str:
+    if payload.startswith(b"\xef\xbb\xbf"):
+        return payload.decode("utf-8-sig")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return payload.decode("cp1251")
+        except UnicodeDecodeError as exc:
+            raise ValueError("unsupported plain-text encoding") from exc
+
+
+def _office_format_from_extension(filename: str) -> Literal["docx", "odt"] | None:
+    normalized_name = filename.strip().lower()
+    if normalized_name.endswith(".docx"):
+        return "docx"
+    if normalized_name.endswith(".odt"):
+        return "odt"
+    return None
+
+
+def _office_format_from_mime(persisted_mime: str | None) -> Literal["docx", "odt"] | None:
+    if not isinstance(persisted_mime, str):
+        return None
+    normalized_mime = persisted_mime.strip().lower()
+    if normalized_mime in _DOCX_MIME_HINTS:
+        return "docx"
+    if normalized_mime in _ODT_MIME_HINTS:
+        return "odt"
+    return None
+
+
+def _sniff_office_package_format(payload: bytes) -> Literal["docx", "odt"] | None:
+    if not payload.startswith(b"PK"):
+        return None
+    try:
+        with ZipFile(io.BytesIO(payload)) as archive:
+            names = set(archive.namelist())
+            if "word/document.xml" in names and "[Content_Types].xml" in names:
+                return "docx"
+            if "mimetype" in names:
+                mimetype = archive.read("mimetype").decode("utf-8", errors="ignore").strip()
+                if mimetype == "application/vnd.oasis.opendocument.text":
+                    return "odt"
+            if "content.xml" in names and "META-INF/manifest.xml" in names:
+                return "odt"
+    except (BadZipFile, KeyError):
+        return None
+    return None
+
+
+def _normalize_submission_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.lstrip("\ufeff")
+    return normalized.strip(" \t\n")
+
+
+def _extract_pdf_submission(*, payload: bytes, pdf_ocr_provider: PdfOCRProvider | None) -> PdfExtractionResult:
+    try:
+        reader = PdfReader(io.BytesIO(payload), strict=False)
+    except Exception as exc:  # pragma: no cover - parser exception types vary by backend
+        raise ValueError(_PARSE_FAILED_MESSAGE) from exc
+
+    total_pages = len(reader.pages)
+    if total_pages == 0:
+        raise ValueError(_PARSE_FAILED_MESSAGE)
+
+    processed_pages = min(total_pages, _PDF_MAX_PAGES)
+    bounded_reason: str | None = None
+    if total_pages > processed_pages:
+        bounded_reason = "page_limit"
+
+    page_results: list[PdfPageExtractionResult] = []
+    ocr_candidate_page_indexes: list[int] = []
+    for page_index in range(1, processed_pages + 1):
+        page = reader.pages[page_index - 1]
+        reason_flags: list[str] = []
+        extraction_text = ""
+        try:
+            extraction_text = page.extract_text() or ""
+        except Exception:
+            reason_flags.append("extraction_error")
+
+        native_text = _normalize_pdf_page_text(extraction_text)
+        native_char_count = len(native_text)
+        if native_char_count == 0:
+            reason_flags.append("empty_native_text")
+        elif native_char_count < _PDF_MIN_PAGE_TEXT_CHARS:
+            reason_flags.append("low_text_density")
+        if _pdf_page_contains_image(page) and native_char_count < 900:
+            reason_flags.append("embedded_image")
+
+        ocr_candidate = bool(reason_flags)
+        if ocr_candidate:
+            ocr_candidate_page_indexes.append(page_index)
+
+        page_results.append(
+            PdfPageExtractionResult(
+                page_index=page_index,
+                native_text=native_text,
+                merged_text=native_text,
+                native_char_count=native_char_count,
+                ocr_candidate=ocr_candidate,
+                ocr_reason_flags=tuple(reason_flags),
+                used_ocr_text=False,
+            )
+        )
+
+    if ocr_candidate_page_indexes and pdf_ocr_provider is not None:
+        ocr_payload = _coerce_pdf_ocr_payload(
+            payload=pdf_ocr_provider(payload, tuple(ocr_candidate_page_indexes)),
+            allowed_page_indexes=tuple(ocr_candidate_page_indexes),
+        )
+        if ocr_payload:
+            merged_pages: list[PdfPageExtractionResult] = []
+            for page in page_results:
+                ocr_text = ocr_payload.get(page.page_index)
+                if ocr_text:
+                    merged_text = _merge_native_and_ocr_text(native_text=page.native_text, ocr_text=ocr_text)
+                    merged_pages.append(
+                        PdfPageExtractionResult(
+                            page_index=page.page_index,
+                            native_text=page.native_text,
+                            merged_text=merged_text,
+                            native_char_count=page.native_char_count,
+                            ocr_candidate=page.ocr_candidate,
+                            ocr_reason_flags=page.ocr_reason_flags,
+                            used_ocr_text=True,
+                        )
+                    )
+                else:
+                    merged_pages.append(page)
+            page_results = merged_pages
+
+    submission_text = _assemble_pdf_submission_text(tuple(page_results))
+    if len(submission_text) > _PDF_MAX_CHARS:
+        submission_text = submission_text[:_PDF_MAX_CHARS].rstrip()
+        bounded_reason = bounded_reason or "char_limit"
+
+    effective_total_chars = len(submission_text)
+    if effective_total_chars < _PDF_MIN_TOTAL_TEXT_CHARS:
+        raise ValueError("PDF extraction produced sparse text; OCR required")
+
+    final_pages = _apply_submission_text_to_pages(page_results=tuple(page_results), submission_text=submission_text)
+    used_ocr = any(page.used_ocr_text for page in final_pages)
+    outcome: Literal["native_complete", "ocr_partial", "bounded"] = "native_complete"
+    if bounded_reason is not None:
+        outcome = "bounded"
+    elif used_ocr:
+        outcome = "ocr_partial"
+
+    return PdfExtractionResult(
+        total_pages=total_pages,
+        processed_pages=processed_pages,
+        pages=final_pages,
+        ocr_candidate_page_indexes=tuple(ocr_candidate_page_indexes),
+        bounded=bounded_reason is not None,
+        bounded_reason=bounded_reason,
+        outcome=outcome,
+    )
+
+
+def _normalize_pdf_page_text(text: str) -> str:
+    lines = [_normalize_inline_text(line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _pdf_page_contains_image(page: object) -> bool:
+    try:
+        resources = getattr(page, "get", lambda _: None)("/Resources")
+        if resources is None:
+            return False
+        xobjects = resources.get("/XObject") if hasattr(resources, "get") else None
+        if not xobjects:
+            return False
+        for _, obj in xobjects.items():
+            resolved = obj.get_object() if hasattr(obj, "get_object") else obj
+            if hasattr(resolved, "get") and resolved.get("/Subtype") == "/Image":
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _coerce_pdf_ocr_payload(*, payload: Mapping[int, str] | Mapping[object, object], allowed_page_indexes: tuple[int, ...]) -> dict[int, str]:
+    allowed = set(allowed_page_indexes)
+    sanitized: dict[int, str] = {}
+    for page_key, page_text in payload.items():
+        if not isinstance(page_key, int) or page_key not in allowed:
+            continue
+        if not isinstance(page_text, str):
+            continue
+        normalized_text = _normalize_pdf_page_text(page_text)
+        if not normalized_text:
+            continue
+        sanitized[page_key] = normalized_text
+    return sanitized
+
+
+def _merge_native_and_ocr_text(*, native_text: str, ocr_text: str) -> str:
+    if not native_text:
+        return ocr_text
+    return _normalize_submission_text(f"{native_text}\n{ocr_text}")
+
+
+def _assemble_pdf_submission_text(pages: tuple[PdfPageExtractionResult, ...]) -> str:
+    if not pages:
+        return ""
+    include_page_delimiters = len(pages) > 1
+    chunks: list[str] = []
+    for page in pages:
+        page_text = _normalize_submission_text(page.merged_text)
+        if not page_text:
+            continue
+        if include_page_delimiters:
+            chunks.append(_PDF_PAGE_DELIMITER_TEMPLATE.format(page=page.page_index).strip("\n"))
+        chunks.append(page_text)
+    return _normalize_submission_text("\n\n".join(chunks))
+
+
+def _apply_submission_text_to_pages(
+    *, page_results: tuple[PdfPageExtractionResult, ...], submission_text: str
+) -> tuple[PdfPageExtractionResult, ...]:
+    if not page_results:
+        return page_results
+    if submission_text:
+        return page_results
+    return tuple(
+        PdfPageExtractionResult(
+            page_index=page.page_index,
+            native_text=page.native_text,
+            merged_text="",
+            native_char_count=page.native_char_count,
+            ocr_candidate=page.ocr_candidate,
+            ocr_reason_flags=page.ocr_reason_flags,
+            used_ocr_text=page.used_ocr_text,
+        )
+        for page in page_results
+    )
+
+
+def _extract_office_document(*, payload: bytes, file_format: Literal["docx", "odt"]) -> OfficeExtractionResult:
+    try:
+        with ZipFile(io.BytesIO(payload)) as archive:
+            if file_format == "docx":
+                return _extract_docx_submission(archive)
+            return _extract_odt_submission(archive)
+    except (BadZipFile, ET.ParseError, KeyError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(_PARSE_FAILED_MESSAGE) from exc
+
+
+def _extract_docx_submission(archive: ZipFile) -> OfficeExtractionResult:
+    root = ET.fromstring(archive.read("word/document.xml"))
+    body = root.find("w:body", _DOCX_NS)
+    if body is None:
+        raise ValueError("missing document body")
+
+    blocks: list[str] = []
+    embedded_image_count = 0
+    for child in body:
+        if child.tag == _docx_tag("p"):
+            paragraph_text, paragraph_images = _extract_docx_paragraph(child)
+            embedded_image_count += paragraph_images
+            if paragraph_text:
+                blocks.append(paragraph_text)
+            if child.find("./w:pPr/w:sectPr", _DOCX_NS) is not None:
+                blocks.append("")
+        elif child.tag == _docx_tag("tbl"):
+            table_rows, table_images = _extract_docx_table(child)
+            embedded_image_count += table_images
+            blocks.extend(table_rows)
+        elif child.tag == _docx_tag("sectPr"):
+            blocks.append("")
+
+    submission_text = _finalize_extracted_blocks(blocks)
+    if not submission_text:
+        raise ValueError("empty docx body")
+    return OfficeExtractionResult(
+        detected_format="docx",
+        submission_text=submission_text,
+        embedded_image_count=embedded_image_count,
+    )
+
+
+def _extract_docx_paragraph(paragraph: ET.Element) -> tuple[str, int]:
+    parts: list[str] = []
+    embedded_image_count = 0
+    for run in paragraph.findall(".//w:r", _DOCX_NS):
+        embedded_image_count += _count_docx_images(run)
+        run_text = _extract_docx_run_text(run)
+        if not run_text:
+            continue
+        parts.append(_apply_docx_inline_formatting(run, run_text))
+
+    paragraph_text = _normalize_inline_text("".join(parts))
+    if paragraph_text and paragraph.find("./w:pPr/w:numPr", _DOCX_NS) is not None:
+        paragraph_text = f"- {paragraph_text}"
+    return paragraph_text, embedded_image_count
+
+
+def _extract_docx_run_text(run: ET.Element) -> str:
+    parts: list[str] = []
+    for node in run.iter():
+        if node.tag == _docx_tag("t"):
+            parts.append(node.text or "")
+        elif node.tag == _docx_tag("tab"):
+            parts.append("\t")
+        elif node.tag in {_docx_tag("br"), _docx_tag("cr")}:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _apply_docx_inline_formatting(run: ET.Element, text: str) -> str:
+    if not text.strip():
+        return text
+    is_bold = _docx_run_property_enabled(run, "b")
+    is_italic = _docx_run_property_enabled(run, "i")
+    if is_bold and is_italic:
+        return f"***{text}***"
+    if is_bold:
+        return f"**{text}**"
+    if is_italic:
+        return f"_{text}_"
+    return text
+
+
+def _docx_run_property_enabled(run: ET.Element, tag_name: str) -> bool:
+    prop = run.find(f"./w:rPr/w:{tag_name}", _DOCX_NS)
+    if prop is None:
+        return False
+    value = prop.attrib.get(_docx_attr("val"), "true").strip().lower()
+    return value not in {"0", "false", "off"}
+
+
+def _extract_docx_table(table: ET.Element) -> tuple[list[str], int]:
+    rows: list[str] = []
+    embedded_image_count = 0
+    for row in table.findall("w:tr", _DOCX_NS):
+        cells: list[str] = []
+        for cell in row.findall("w:tc", _DOCX_NS):
+            cell_parts: list[str] = []
+            for paragraph in cell.findall("w:p", _DOCX_NS):
+                paragraph_text, paragraph_images = _extract_docx_paragraph(paragraph)
+                embedded_image_count += paragraph_images
+                if paragraph_text:
+                    cell_parts.append(paragraph_text)
+            cell_text = _normalize_inline_text(" ".join(cell_parts))
+            if cell_text:
+                cells.append(cell_text)
+        if cells:
+            rows.append(" | ".join(cells))
+    return rows, embedded_image_count
+
+
+def _count_docx_images(element: ET.Element) -> int:
+    return sum(1 for node in element.iter() if node.tag in {_DOCX_DRAWING_TAG, _DOCX_OBJECT_TAG, _DOCX_PICT_TAG})
+
+
+def _extract_odt_submission(archive: ZipFile) -> OfficeExtractionResult:
+    root = ET.fromstring(archive.read("content.xml"))
+    office_text = root.find(".//office:body/office:text", _ODT_NS)
+    if office_text is None:
+        raise ValueError("missing office body")
+
+    blocks: list[str] = []
+    embedded_image_count = 0
+    for child in office_text:
+        child_blocks, child_images = _extract_odt_block(child)
+        embedded_image_count += child_images
+        blocks.extend(child_blocks)
+
+    submission_text = _finalize_extracted_blocks(blocks)
+    if not submission_text:
+        raise ValueError("empty odt body")
+    return OfficeExtractionResult(
+        detected_format="odt",
+        submission_text=submission_text,
+        embedded_image_count=embedded_image_count,
+    )
+
+
+def _extract_odt_block(element: ET.Element) -> tuple[list[str], int]:
+    if element.tag in {_odt_tag("text", "p"), _odt_tag("text", "h")}:
+        text = _normalize_inline_text(_extract_odt_inline_text(element))
+        return ([text] if text else []), _count_odt_images(element)
+
+    if element.tag == _odt_tag("text", "list"):
+        blocks: list[str] = []
+        embedded_image_count = 0
+        for item in element.findall("text:list-item", _ODT_NS):
+            item_parts: list[str] = []
+            for child in item:
+                child_blocks, child_images = _extract_odt_block(child)
+                embedded_image_count += child_images
+                item_parts.extend(child_blocks)
+            item_text = _normalize_inline_text(" ".join(item_parts))
+            if item_text:
+                blocks.append(f"- {item_text}")
+        return blocks, embedded_image_count
+
+    if element.tag == _odt_tag("table", "table"):
+        rows: list[str] = []
+        embedded_image_count = 0
+        for row in element.findall("table:table-row", _ODT_NS):
+            cells: list[str] = []
+            for cell in row.findall("table:table-cell", _ODT_NS):
+                cell_blocks: list[str] = []
+                for child in cell:
+                    child_blocks, child_images = _extract_odt_block(child)
+                    embedded_image_count += child_images
+                    cell_blocks.extend(child_blocks)
+                cell_text = _normalize_inline_text(" ".join(cell_blocks))
+                if cell_text:
+                    cells.append(cell_text)
+            if cells:
+                rows.append(" | ".join(cells))
+        return rows, embedded_image_count
+
+    return [], _count_odt_images(element)
+
+
+def _extract_odt_inline_text(element: ET.Element) -> str:
+    parts: list[str] = []
+    if element.text:
+        parts.append(element.text)
+    for child in element:
+        if child.tag == _odt_tag("text", "s"):
+            parts.append(" " * int(child.attrib.get(_odt_attr("text", "c"), "1")))
+        elif child.tag == _odt_tag("text", "tab"):
+            parts.append("\t")
+        elif child.tag == _odt_tag("text", "line-break"):
+            parts.append("\n")
+        else:
+            parts.append(_extract_odt_inline_text(child))
+        if child.tail:
+            parts.append(child.tail)
+    return "".join(parts)
+
+
+def _count_odt_images(element: ET.Element) -> int:
+    return sum(1 for node in element.iter() if node.tag == _ODT_IMAGE_TAG)
+
+
+def _finalize_extracted_blocks(blocks: list[str]) -> str:
+    normalized_blocks: list[str] = []
+    previous_blank = False
+    for block in blocks:
+        normalized_block = _normalize_block_text(block)
+        if not normalized_block:
+            if normalized_blocks and not previous_blank:
+                normalized_blocks.append("")
+            previous_blank = True
+            continue
+        normalized_blocks.append(normalized_block)
+        previous_blank = False
+    while normalized_blocks and normalized_blocks[-1] == "":
+        normalized_blocks.pop()
+    return _normalize_submission_text("\n".join(normalized_blocks))
+
+
+def _normalize_block_text(text: str) -> str:
+    lines = [_normalize_inline_text(line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _normalize_inline_text(text: str) -> str:
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _docx_tag(local_name: str) -> str:
+    return f"{{{_DOCX_NS['w']}}}{local_name}"
+
+
+def _docx_attr(local_name: str) -> str:
+    return f"{{{_DOCX_NS['w']}}}{local_name}"
+
+
+def _odt_tag(prefix: str, local_name: str) -> str:
+    return f"{{{_ODT_NS[prefix]}}}{local_name}"
+
+
+def _odt_attr(prefix: str, local_name: str) -> str:
+    return f"{{{_ODT_NS[prefix]}}}{local_name}"
+
+
+def _invoke_normalization_parser(*, parser_input: NormalizationParserInput, llm: LLMClient) -> NormalizationParserOutput:
+    payload = {
+        "assignment_public_id": parser_input.assignment_public_id,
+        "language": parser_input.language,
+        "assignment_tasks": [
+            {
+                "task_id": task.task_id,
+                "task_index": task.task_index,
+                "task_text": task.task_text,
+            }
+            for task in parser_input.tasks
+        ],
+        "submission_text": parser_input.submission_text,
+    }
+    result = llm.evaluate(
+        LLMClientRequest(
+            system_prompt=_NORMALIZATION_PARSER_SYSTEM_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            model="normalization-parser:v1",
+            temperature=0.0,
+            seed=42,
+            response_language=parser_input.language,
+        )
+    )
+
+    raw_output, malformed = _decode_parser_response_payload(
+        raw_json=result.raw_json,
+        raw_text=result.raw_text,
+    )
+    if malformed:
+        repaired_raw_json, repaired_raw_text = _repair_malformed_parser_json(
+            parser_input=parser_input,
+            malformed_output=result.raw_text,
+            llm=llm,
+        )
+        raw_output, malformed = _decode_parser_response_payload(raw_json=repaired_raw_json, raw_text=repaired_raw_text)
+        if malformed:
+            raise ValueError("normalization parser output is not valid JSON")
+
+    if raw_output is None:
+        raise ValueError("normalization parser output is not valid JSON")
+
+    expected_task_ids = tuple(task.task_id for task in parser_input.tasks)
+    return _decode_parser_output(raw_output, expected_task_ids=expected_task_ids)
+
+
+def _decode_parser_response_payload(
+    *,
+    raw_json: object | None,
+    raw_text: str,
+) -> tuple[object | None, bool]:
+    if raw_json is not None:
+        return raw_json, False
+    try:
+        return json.loads(raw_text), False
+    except json.JSONDecodeError:
+        return None, True
+
+
+def _repair_malformed_parser_json(
+    *,
+    parser_input: NormalizationParserInput,
+    malformed_output: str,
+    llm: LLMClient,
+) -> tuple[object | None, str]:
+    repair_payload = {
+        "assignment_public_id": parser_input.assignment_public_id,
+        "language": parser_input.language,
+        "assignment_tasks": [
+            {
+                "task_id": task.task_id,
+                "task_index": task.task_index,
+                "task_text": task.task_text,
+            }
+            for task in parser_input.tasks
+        ],
+        "submission_text": parser_input.submission_text,
+        "malformed_output": malformed_output,
+    }
+    logger.warning(
+        "normalization parser output is malformed JSON; attempting bounded repair",
+        extra={"component": COMPONENT_ID},
+    )
+    repair_result = llm.evaluate(
+        LLMClientRequest(
+            system_prompt=_NORMALIZATION_MALFORMED_JSON_REPAIR_SYSTEM_PROMPT,
+            user_prompt=json.dumps(repair_payload, ensure_ascii=False, sort_keys=True),
+            model="normalization-parser:v1",
+            temperature=0.0,
+            seed=42,
+            response_language=parser_input.language,
+        )
+    )
+    return repair_result.raw_json, repair_result.raw_text
+
+
+def _decode_parser_output(raw_output: object, *, expected_task_ids: tuple[str, ...]) -> NormalizationParserOutput:
+    if not isinstance(raw_output, dict):
+        raise ValueError("normalization parser output must be a JSON object")
+    task_solutions_raw = raw_output.get("task_solutions")
+    unmapped_text = raw_output.get("unmapped_text")
+    if not isinstance(task_solutions_raw, list):
+        raise ValueError("normalization parser output.task_solutions must be array")
+    if not isinstance(unmapped_text, str):
+        raise ValueError("normalization parser output.unmapped_text must be string")
+
+    task_solutions: list[NormalizationTaskSolution] = []
+    seen_task_ids: set[str] = set()
+    answer_missing = object()
+    for index, entry in enumerate(task_solutions_raw):
+        if not isinstance(entry, dict):
+            raise ValueError("normalization parser output.task_solutions[] must be object")
+        task_id = entry.get("task_id")
+        answer: object = entry.get("answer", answer_missing)
+        if answer is answer_missing:
+            answer = entry.get("solution", answer_missing)
+        if not isinstance(task_id, str) or not task_id:
+            task_id = _fallback_task_id(index=index, expected_task_ids=expected_task_ids)
+            logger.warning(
+                "normalization parser omitted task_id; using fallback from assignment order",
+                extra={"component": COMPONENT_ID, "task_id": task_id, "index": index},
+            )
+        if answer is answer_missing:
+            logger.warning(
+                "normalization parser omitted answer; coercing to empty string",
+                extra={"component": COMPONENT_ID, "task_id": task_id},
+            )
+            answer = ""
+        answer_text = _coerce_answer_text(answer=answer, task_id=task_id)
+        if task_id in seen_task_ids:
+            logger.warning(
+                "normalization parser produced duplicate task_id; keeping first answer",
+                extra={"component": COMPONENT_ID, "task_id": task_id},
+            )
+            continue
+        seen_task_ids.add(task_id)
+        task_solutions.append(NormalizationTaskSolution(task_id=task_id, answer=answer_text))
+
+    return NormalizationParserOutput(task_solutions=tuple(task_solutions), unmapped_text=unmapped_text)
+
+
+def _fallback_task_id(*, index: int, expected_task_ids: tuple[str, ...]) -> str:
+    if expected_task_ids:
+        if index < len(expected_task_ids):
+            return expected_task_ids[index]
+        return expected_task_ids[-1]
+    return f"task_{index + 1}"
+
+
+def _coerce_answer_text(*, answer: object, task_id: str) -> str:
+    if isinstance(answer, str):
+        return answer
+    if answer is None:
+        logger.warning(
+            "normalization parser produced null answer; coercing to empty string",
+            extra={"component": COMPONENT_ID, "task_id": task_id},
+        )
+        return ""
+    if isinstance(answer, (int, float, bool)):
+        logger.warning(
+            "normalization parser produced non-string answer; coercing to text",
+            extra={"component": COMPONENT_ID, "task_id": task_id, "answer_type": type(answer).__name__},
+        )
+        return str(answer)
+    if isinstance(answer, (list, dict)):
+        logger.warning(
+            "normalization parser produced structured answer; coercing to JSON string",
+            extra={"component": COMPONENT_ID, "task_id": task_id, "answer_type": type(answer).__name__},
+        )
+        return json.dumps(answer, ensure_ascii=False, sort_keys=True)
+    logger.warning(
+        "normalization parser produced unsupported answer type; coercing to text",
+        extra={"component": COMPONENT_ID, "task_id": task_id, "answer_type": type(answer).__name__},
+    )
+    return str(answer)

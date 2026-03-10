@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_002",
+  "assignment_public_id": "asg_db_review_v1",
+  "source_type": "api_upload",
+  "submission_text": "Task 1: Add UNIQUE(email). Task 2: Add index on created_at. Task 1: Also normalize phone format.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Add UNIQUE(email) and normalize phone format."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add index on created_at."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

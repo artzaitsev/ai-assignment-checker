@@ -1,0 +1,3 @@
+Task 1: Add UNIQUE(email).
+Task 2: Add index on created_at.
+Task 1: Also normalize phone format.

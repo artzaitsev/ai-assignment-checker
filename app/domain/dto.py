@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Mapping
+from typing import Literal
 
 from app.domain.evaluation_contracts import (
     CandidateFeedback,
@@ -45,12 +47,80 @@ class LinkArtifactCommand:
 class NormalizePayloadCommand:
     submission_id: str
     artifact_ref: str
+    filename: str
+    source_type: Literal["api_upload", "telegram"]
+    persisted_mime: str | None
+    raw_payload: bytes
+    assignment_public_id: str
+    assignment_language: str
+    assignment_tasks: tuple["NormalizationTaskInput", ...]
+
+
+@dataclass(frozen=True)
+class NormalizationTaskInput:
+    task_id: str
+    task_index: int
+    task_text: str
+
+
+@dataclass(frozen=True)
+class NormalizationParserInput:
+    assignment_public_id: str
+    language: str
+    tasks: tuple[NormalizationTaskInput, ...]
+    submission_text: str
+
+
+@dataclass(frozen=True)
+class NormalizationTaskSolution:
+    task_id: str
+    answer: str
+
+
+@dataclass(frozen=True)
+class NormalizationParserOutput:
+    task_solutions: tuple[NormalizationTaskSolution, ...]
+    unmapped_text: str
+
+
+@dataclass(frozen=True)
+class OfficeExtractionResult:
+    detected_format: Literal["docx", "odt"]
+    submission_text: str
+    embedded_image_count: int
+
+
+@dataclass(frozen=True)
+class PdfPageExtractionResult:
+    page_index: int
+    native_text: str
+    merged_text: str
+    native_char_count: int
+    ocr_candidate: bool
+    ocr_reason_flags: tuple[str, ...]
+    used_ocr_text: bool
+
+
+@dataclass(frozen=True)
+class PdfExtractionResult:
+    total_pages: int
+    processed_pages: int
+    pages: tuple[PdfPageExtractionResult, ...]
+    ocr_candidate_page_indexes: tuple[int, ...]
+    bounded: bool
+    bounded_reason: str | None
+    outcome: Literal["native_complete", "ocr_partial", "bounded"]
+
+
+PdfOCRProvider = Callable[[bytes, tuple[int, ...]], Mapping[int, str]]
 
 
 @dataclass(frozen=True)
 class NormalizePayloadResult:
     normalized_artifact: NormalizedArtifact
     schema_version: str
+    office_extraction: OfficeExtractionResult | None = None
+    pdf_extraction: PdfExtractionResult | None = None
 
 
 @dataclass(frozen=True)

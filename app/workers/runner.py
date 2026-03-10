@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.workers.loop import WorkerLoop
 
@@ -25,6 +25,11 @@ class WorkerRuntimeState:
     claims_total: int = 0
     idle_ticks_total: int = 0
     errors_total: int = 0
+    stage_duration_ms_total: dict[str, int] = field(default_factory=dict)
+    stage_success_total: dict[str, int] = field(default_factory=dict)
+    stage_retry_total: dict[str, int] = field(default_factory=dict)
+    stage_terminal_failure_total: dict[str, int] = field(default_factory=dict)
+    stage_error_total: dict[str, int] = field(default_factory=dict)
 
 
 def worker_runtime_settings_from_env() -> WorkerRuntimeSettings:
@@ -82,6 +87,7 @@ async def run_worker_until_stopped(
                 state.ticks_total += 1
                 if did_work:
                     state.claims_total += 1
+                    _update_stage_metrics_from_loop(state=state, worker_loop=worker_loop)
                 else:
                     state.idle_ticks_total += 1
             delay_ms = settings.poll_interval_ms if did_work else settings.idle_backoff_ms
@@ -95,14 +101,21 @@ async def run_worker_until_stopped(
                     "did_work": str(did_work).lower(),
                 },
             )
-        except Exception:
+        except Exception as exc:
             if state is not None:
                 state.ticks_total += 1
                 state.errors_total += 1
             delay_ms = settings.error_backoff_ms
             logger.exception(
                 "worker tick error",
-                extra={"role": role, "service": role, "run_id": run_id, "stage": worker_loop.stage},
+                extra={
+                    "role": role,
+                    "service": role,
+                    "run_id": run_id,
+                    "stage": worker_loop.stage,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
             )
 
         try:
@@ -116,3 +129,26 @@ async def run_worker_until_stopped(
     )
     if state is not None:
         state.stopped = True
+
+
+def _update_stage_metrics_from_loop(*, state: WorkerRuntimeState, worker_loop: WorkerLoop) -> None:
+    diagnostics = worker_loop.last_run_diagnostics
+    if diagnostics is None:
+        return
+
+    stage = diagnostics.stage
+    state.stage_duration_ms_total[stage] = state.stage_duration_ms_total.get(stage, 0) + max(diagnostics.duration_ms, 0)
+
+    if diagnostics.success:
+        state.stage_success_total[stage] = state.stage_success_total.get(stage, 0) + 1
+        return
+
+    if diagnostics.error_code is None:
+        return
+
+    error_key = f"{stage}:{diagnostics.error_code}"
+    state.stage_error_total[error_key] = state.stage_error_total.get(error_key, 0) + 1
+    if diagnostics.retry_classification == "recoverable":
+        state.stage_retry_total[error_key] = state.stage_retry_total.get(error_key, 0) + 1
+        return
+    state.stage_terminal_failure_total[error_key] = state.stage_terminal_failure_total.get(error_key, 0) + 1

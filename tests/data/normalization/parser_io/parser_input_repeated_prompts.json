@@ -1,0 +1,9 @@
+{
+  "assignment_public_id": "asg_db_review_v1",
+  "submission_public_id": "sub_case_002",
+  "submission_text": "Task 1: Add a UNIQUE constraint for email. Task 2: Add an index on created_at. Task 1: Also normalize phone format.",
+  "assignment_tasks": [
+    "task_1",
+    "task_2"
+  ]
+}

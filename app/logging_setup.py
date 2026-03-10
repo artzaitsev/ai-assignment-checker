@@ -6,6 +6,31 @@ import sys
 from datetime import UTC, datetime
 
 
+_STANDARD_LOG_RECORD_KEYS = {
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+    "message",
+}
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
@@ -19,6 +44,15 @@ class JsonFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
+
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_LOG_RECORD_KEYS or key.startswith("_"):
+                continue
+            if key not in payload:
+                payload[key] = value
+
+        if record.exc_info:
+            payload["traceback"] = self.formatException(record.exc_info)
 
         return json.dumps(payload)
 

@@ -10,6 +10,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
+from app.api.handlers.admin import (
+    create_admin_export_handler,
+    get_admin_submission_detail_handler,
+    list_admin_submissions_handler,
+)
 from app.api.handlers.assignments import create_assignment_handler, list_assignments_handler
 from app.api.handlers.candidate_apply import (
     exchange_entry_token_for_session,
@@ -21,9 +26,15 @@ from app.api.handlers.deps import ApiDeps
 from app.api.handlers.exports import export_results_handler
 from app.api.handlers.feedback import list_feedback_handler
 from app.api.handlers.pipeline import run_test_pipeline_handler
-from app.api.handlers.status import get_submission_status_handler, get_submission_status_with_trace_handler
+from app.api.handlers.status import get_submission_status_handler
 from app.api.handlers.submissions import create_submission_with_candidate_handler, create_submission_with_file_handler
-from app.api.views.candidate_apply import form_context, page_context, result_context
+from app.api.views.candidate_apply import (
+    form_context,
+    page_context,
+    result_context,
+    result_page_context,
+    result_panel_context,
+)
 from app.api.schemas import (
     ASSIGNMENT_ID_PATTERN,
     CANDIDATE_ID_PATTERN,
@@ -46,7 +57,7 @@ from app.api.schemas import (
     WorkerMetrics,
 )
 from app.domain.errors import DomainInvariantError
-from app.domain.models import SortOrder, SubmissionSortBy
+from app.domain.models import SortOrder, SubmissionSortBy, SubmissionStatus
 
 from app.workers.loop import WorkerLoop
 from app.workers.runner import (
@@ -128,6 +139,30 @@ def build_app(
     app = FastAPI(title="ai-assignment-checker", version="0.1.0", lifespan=lifespan)
     templates = Jinja2Templates(directory="app/templates")
 
+    def _parse_submission_status(value: str | None) -> SubmissionStatus | None:
+        if value is None or not value.strip():
+            return None
+        try:
+            return SubmissionStatus(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid status filter") from exc
+
+    def _parse_submission_sort_by(value: str | None) -> SubmissionSortBy:
+        if value is None or not value.strip():
+            return SubmissionSortBy.CREATED_AT
+        try:
+            return SubmissionSortBy(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid sort_by") from exc
+
+    def _parse_sort_order(value: str | None) -> SortOrder:
+        if value is None or not value.strip():
+            return SortOrder.DESC
+        try:
+            return SortOrder(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid sort_order") from exc
+
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", role=role, mode="skeleton")
@@ -143,6 +178,11 @@ def build_app(
             "claims_total": 0,
             "idle_ticks_total": 0,
             "errors_total": 0,
+            "stage_duration_ms_total": {},
+            "stage_success_total": {},
+            "stage_retry_total": {},
+            "stage_terminal_failure_total": {},
+            "stage_error_total": {},
         }
         if worker_loop_enabled:
             worker_loop_ready = (
@@ -159,6 +199,11 @@ def build_app(
                     "claims_total": worker_state.claims_total,
                     "idle_ticks_total": worker_state.idle_ticks_total,
                     "errors_total": worker_state.errors_total,
+                    "stage_duration_ms_total": dict(worker_state.stage_duration_ms_total),
+                    "stage_success_total": dict(worker_state.stage_success_total),
+                    "stage_retry_total": dict(worker_state.stage_retry_total),
+                    "stage_terminal_failure_total": dict(worker_state.stage_terminal_failure_total),
+                    "stage_error_total": dict(worker_state.stage_error_total),
                 }
 
         return ReadyResponse(
@@ -174,6 +219,11 @@ def build_app(
                 claims_total=metrics["claims_total"],
                 idle_ticks_total=metrics["idle_ticks_total"],
                 errors_total=metrics["errors_total"],
+                stage_duration_ms_total=metrics["stage_duration_ms_total"],
+                stage_success_total=metrics["stage_success_total"],
+                stage_retry_total=metrics["stage_retry_total"],
+                stage_terminal_failure_total=metrics["stage_terminal_failure_total"],
+                stage_error_total=metrics["stage_error_total"],
             ),
         )
 
@@ -198,14 +248,15 @@ def build_app(
 
     @app.get("/submissions/{submission_id}", response_model=SubmissionStatusResponse, tags=["Submissions"])
     async def get_submission_status(submission_id: str) -> SubmissionStatusResponse:
-        if api_deps is not None:
-            traced_status = await get_submission_status_with_trace_handler(
-                api_deps,
-                submission_id=submission_id,
-            )
-            if traced_status is not None:
-                return traced_status
-        return await get_submission_status_handler(submission_id=submission_id)
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+        payload = await get_submission_status_handler(
+            deps=api_deps,
+            submission_id=submission_id,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="submission not found")
+        return payload
 
     @app.get("/candidate/apply", response_class=HTMLResponse, tags=["Candidates"])
     async def candidate_apply_page(request: Request, token: str = Query(..., min_length=8)) -> HTMLResponse:
@@ -310,8 +361,46 @@ def build_app(
                 submission_id=submission_id,
             ),
         )
+        response.headers["HX-Push-Url"] = f"/candidate/apply/result/{submission_id}"
         response.delete_cookie("apply_session")
         return response
+
+    @app.get("/candidate/apply/result/{submission_id}", response_class=HTMLResponse, tags=["Candidates"])
+    async def candidate_apply_result_page(request: Request, submission_id: str) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        status_payload = await get_submission_status_handler(deps=api_deps, submission_id=submission_id)
+        if status_payload is None:
+            raise HTTPException(status_code=404, detail="submission not found")
+
+        return templates.TemplateResponse(
+            request=request,
+            name="candidate_apply/result_page.html",
+            context=result_page_context(submission_id=submission_id),
+        )
+
+    @app.get("/candidate/apply/result/{submission_id}/panel", response_class=HTMLResponse, tags=["Candidates"])
+    async def candidate_apply_result_panel(request: Request, submission_id: str) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        status_payload = await get_submission_status_handler(deps=api_deps, submission_id=submission_id)
+        if status_payload is None:
+            raise HTTPException(status_code=404, detail="submission not found")
+
+        feedback_payload = await list_feedback_handler(deps=api_deps, submission_id=submission_id)
+        feedback_item = feedback_payload.items[0] if feedback_payload.items else None
+        context = result_panel_context(
+            submission_id=submission_id,
+            state=status_payload.state,
+            feedback_item=feedback_item,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="candidate_apply/result_panel.html",
+            context=context,
+        )
 
     @app.post(
         "/submissions/file",
@@ -390,7 +479,143 @@ def build_app(
 
     @app.get("/feedback", response_model=FeedbackListResponse, tags=["Submissions"])
     async def list_feedback(submission_id: str | None = Query(default=None)) -> FeedbackListResponse:
-        return await list_feedback_handler(submission_id=submission_id)
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+        return await list_feedback_handler(deps=api_deps, submission_id=submission_id)
+
+    @app.get("/admin/submissions", response_class=HTMLResponse, tags=["Submissions"])
+    async def admin_submissions_page(
+        request: Request,
+        status: str | None = Query(default=None),
+        candidate_public_id: str | None = Query(default=None),
+        assignment_public_id: str | None = Query(default=None),
+        sort_by: str | None = Query(default="created_at"),
+        sort_order: str | None = Query(default="desc"),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        parsed_status = _parse_submission_status(status)
+        parsed_sort_by = _parse_submission_sort_by(sort_by)
+        parsed_sort_order = _parse_sort_order(sort_order)
+        items = await list_admin_submissions_handler(
+            api_deps,
+            status=parsed_status,
+            candidate_public_id=candidate_public_id,
+            assignment_public_id=assignment_public_id,
+            sort_by=parsed_sort_by,
+            sort_order=parsed_sort_order,
+            limit=limit,
+            offset=offset,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/submissions_page.html",
+            context={
+                "items": items,
+                "status": status or "",
+                "candidate_public_id": candidate_public_id or "",
+                "assignment_public_id": assignment_public_id or "",
+                "sort_by": parsed_sort_by.value,
+                "sort_order": parsed_sort_order.value,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+    @app.get("/admin/submissions/table", response_class=HTMLResponse, tags=["Submissions"])
+    async def admin_submissions_table(
+        request: Request,
+        status: str | None = Query(default=None),
+        candidate_public_id: str | None = Query(default=None),
+        assignment_public_id: str | None = Query(default=None),
+        sort_by: str | None = Query(default="created_at"),
+        sort_order: str | None = Query(default="desc"),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        parsed_status = _parse_submission_status(status)
+        parsed_sort_by = _parse_submission_sort_by(sort_by)
+        parsed_sort_order = _parse_sort_order(sort_order)
+        items = await list_admin_submissions_handler(
+            api_deps,
+            status=parsed_status,
+            candidate_public_id=candidate_public_id,
+            assignment_public_id=assignment_public_id,
+            sort_by=parsed_sort_by,
+            sort_order=parsed_sort_order,
+            limit=limit,
+            offset=offset,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/submissions_table.html",
+            context={
+                "items": items,
+                "status": status or "",
+                "candidate_public_id": candidate_public_id or "",
+                "assignment_public_id": assignment_public_id or "",
+                "sort_by": parsed_sort_by.value,
+                "sort_order": parsed_sort_order.value,
+            },
+        )
+
+    @app.get("/admin/submissions/{submission_id}", response_class=HTMLResponse, tags=["Submissions"])
+    async def admin_submission_detail(request: Request, submission_id: str) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        item = await get_admin_submission_detail_handler(api_deps, submission_id=submission_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="submission not found")
+
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/submission_detail.html",
+            context={"item": item},
+        )
+
+    @app.post("/admin/submissions/export", response_class=HTMLResponse, tags=["Submissions"])
+    async def admin_submissions_export(
+        request: Request,
+        status: str | None = Form(default=None),
+        candidate_public_id: str | None = Form(default=None),
+        assignment_public_id: str | None = Form(default=None),
+        sort_by: str | None = Form(default="created_at"),
+        sort_order: str | None = Form(default="desc"),
+        limit: int = Form(default=100),
+        offset: int = Form(default=0),
+    ) -> HTMLResponse:
+        if api_deps is None:
+            raise HTTPException(status_code=503, detail="api dependencies are not available")
+
+        parsed_status = _parse_submission_status(status)
+        parsed_sort_by = _parse_submission_sort_by(sort_by)
+        parsed_sort_order = _parse_sort_order(sort_order)
+        result = await create_admin_export_handler(
+            api_deps,
+            status=parsed_status,
+            candidate_public_id=candidate_public_id,
+            assignment_public_id=assignment_public_id,
+            sort_by=parsed_sort_by,
+            sort_order=parsed_sort_order,
+            limit=max(1, min(limit, 1000)),
+            offset=max(0, offset),
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/export_result.html",
+            context={
+                "export_id": result.export_id,
+                "download_url": result.download_url,
+                "rows_count": result.rows_count,
+            },
+        )
 
     @app.post(
         "/exports",

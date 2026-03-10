@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_005",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "Task 1 answer: switch to explicit JOIN conditions. Task 2 answer: add composite index on (user_id, created_at).",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Use explicit JOIN conditions."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add composite index on (user_id, created_at)."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

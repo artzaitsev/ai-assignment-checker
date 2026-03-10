@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
+from time import perf_counter
 
 from app.domain.contracts import WorkRepository
 from app.domain.artifacts import artifact_keys_for_stage
@@ -16,6 +17,16 @@ ProcessHandler = Callable[[WorkItemClaim], Awaitable[ProcessResult]]
 logger = logging.getLogger("runtime")
 
 
+@dataclass(frozen=True)
+class WorkerRunDiagnostics:
+    stage: str
+    submission_id: str
+    success: bool
+    duration_ms: int
+    error_code: str | None = None
+    retry_classification: str | None = None
+
+
 @dataclass
 class WorkerLoop:
     role: str
@@ -24,8 +35,10 @@ class WorkerLoop:
     process: ProcessHandler
     claim_lease_seconds: int = 30
     heartbeat_interval_ms: int = 10000
+    last_run_diagnostics: WorkerRunDiagnostics | None = None
 
     async def run_once(self) -> bool:
+        self.last_run_diagnostics = None
         artifact_keys_for_stage(stage=self.stage)
         claim = await self.repository.claim_next(
             stage=self.stage,
@@ -61,6 +74,7 @@ class WorkerLoop:
                     break
 
         heartbeat_task = asyncio.create_task(_heartbeat_loop())
+        started_at = perf_counter()
         try:
             result = await self.process(claim)
         finally:
@@ -103,5 +117,15 @@ class WorkerLoop:
             success=result.success,
             detail=result.detail,
             error_code=error_code,
+        )
+
+        duration_ms = int((perf_counter() - started_at) * 1000)
+        self.last_run_diagnostics = WorkerRunDiagnostics(
+            stage=self.stage,
+            submission_id=claim.item_id,
+            success=result.success,
+            duration_ms=duration_ms,
+            error_code=error_code,
+            retry_classification=retry_classification,
         )
         return True

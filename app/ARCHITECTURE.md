@@ -57,7 +57,7 @@
 - `app/clients`
   - Адаптеры внешних интеграций (storage, Telegram, LLM).
   - В `INTEGRATION_MODE=stub` используются non-network stubs.
-  - В `INTEGRATION_MODE=real` рантайм подключает реальные адаптеры по role/wiring (включая S3 и Telegram), при этом SDK-вызовы остаются изолированы в слое `clients`.
+  - В `INTEGRATION_MODE=real` рантайм подключает реальные адаптеры по role/wiring: `worker-normalize` использует S3 и LLM, `worker-evaluate` использует LLM, `worker-ingest-telegram` и `worker-deliver` используют Telegram, при этом SDK-вызовы остаются изолированы в слое `clients`.
 
 ## 3) Направление зависимостей (строгое правило)
 
@@ -120,6 +120,7 @@
 - `process(claim)`
   - Выполняет stage-specific поведение (Telegram entry routing, normalize/evaluate/deliver и т.д.).
   - Возвращает `ProcessResult` с флагом успеха, detail и optional artifact metadata.
+  - Стадия normalize читает `raw/`, выполняет plain-text classification/decoding, вызывает parser-backed LLM path с assignment context, валидирует parser result и только потом пишет `normalized:v2` artifact.
   - Стадия evaluate резолвит chain spec из `app/eval/chains/chain.v1.yaml`, использует assignment-owned `task_schema` как единственный scoring contract, берет эффективную модель из runtime settings и берет язык ответа из `assignments.language`.
 
 - `link_artifact(...)` (опционально)
@@ -198,7 +199,7 @@ If claim_next returns None -> return did_work=False (idle/backoff path in runner
 Для ясности по режимам интеграции:
 
 - `INTEGRATION_MODE=stub`: skeleton-поведение, без реальных внешних вызовов.
-- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; для storage подключается S3-совместимый клиент, для Telegram — реальный Bot API клиент через `app/services/bootstrap.py`.
+- `INTEGRATION_MODE=real`: рантайм использует реальные интеграции по role/wiring; `worker-normalize` работает через S3-совместимый storage и реальный LLM adapter, `worker-evaluate` использует реальный LLM adapter, а Telegram worker-roles используют реальный Bot API client через `app/services/bootstrap.py`.
 
 ## 6) Где реализовывать новую логику
 

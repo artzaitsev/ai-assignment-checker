@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from socket import timeout as socket_timeout
-from time import perf_counter
+from time import perf_counter, sleep
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -26,6 +26,8 @@ class OpenAICompatibleLLMClient:
     base_url: str
     model: str
     request_timeout_seconds: float = 30.0
+    request_max_retries: int = 2
+    request_retry_backoff_ms: int = 1000
     chat_completions_path: str = DEFAULT_OPENAI_COMPATIBLE_CHAT_COMPLETIONS_PATH
 
     def evaluate(self, request: LLMClientRequest) -> LLMClientResult:
@@ -102,19 +104,34 @@ class OpenAICompatibleLLMClient:
             },
             method="POST",
         )
+        attempts_total = max(self.request_max_retries, 0) + 1
+        last_retryable_error: LLMRetryableError | None = None
 
-        try:
-            with urllib_request.urlopen(request, timeout=self.request_timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-        except urllib_error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            if exc.code >= 500 or exc.code == 429:
-                raise LLMRetryableError(body or f"llm HTTP error: {exc.code}") from exc
-            raise LLMAdapterError(body or f"llm HTTP error: {exc.code}") from exc
-        except (urllib_error.URLError, TimeoutError, socket_timeout) as exc:
-            raise LLMRetryableError(str(exc)) from exc
+        for attempt in range(attempts_total):
+            body_text = ""
+            try:
+                with urllib_request.urlopen(request, timeout=self.request_timeout_seconds) as response:
+                    body_text = response.read().decode("utf-8")
+            except urllib_error.HTTPError as exc:
+                error_body = exc.read().decode("utf-8", errors="replace")
+                if exc.code >= 500 or exc.code == 429:
+                    last_retryable_error = LLMRetryableError(error_body or f"llm HTTP error: {exc.code}")
+                else:
+                    raise LLMAdapterError(error_body or f"llm HTTP error: {exc.code}") from exc
+            except (urllib_error.URLError, TimeoutError, socket_timeout) as exc:
+                last_retryable_error = LLMRetryableError(str(exc))
+            else:
+                try:
+                    return json.loads(body_text)
+                except json.JSONDecodeError:
+                    last_retryable_error = LLMRetryableError("llm API returned invalid JSON")
 
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise LLMRetryableError("llm API returned invalid JSON") from exc
+            if attempt < attempts_total - 1:
+                sleep(self._retry_delay_seconds(attempt))
+                continue
+
+        raise last_retryable_error or LLMRetryableError("llm request failed")
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        base = self.request_retry_backoff_ms / 1000
+        return base * (2**attempt)

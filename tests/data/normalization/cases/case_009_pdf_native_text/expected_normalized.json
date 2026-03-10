@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_009",
+  "assignment_public_id": "asg_sql_debug_v1",
+  "source_type": "api_upload",
+  "submission_text": "SQL debug assignment - PDF export. Task 1 prompt: find the bug in the provided query and fix it. Answer: the original draft effectively creates a cartesian join; use an explicit JOIN with ON orders.user_id = users.id. Task 2 prompt: describe one performance improvement. Answer: add an index on orders.user_id because the join is repeated in reporting queries. Comment: copied prompts often stay in the final submission PDF.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Replace the cartesian join with an explicit JOIN on orders.user_id = users.id."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Add an index on orders.user_id."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

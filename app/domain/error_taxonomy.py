@@ -7,6 +7,7 @@ from typing import Literal
 ErrorCode = Literal[
     "validation_error",
     "unsupported_format",
+    "file_parse_failed",
     "telegram_update_invalid",
     "telegram_file_fetch_failed",
     "artifact_missing",
@@ -22,6 +23,7 @@ RetryClassification = Literal["recoverable", "terminal"]
 CANONICAL_ERROR_CODES: tuple[ErrorCode, ...] = (
     "validation_error",
     "unsupported_format",
+    "file_parse_failed",
     "telegram_update_invalid",
     "telegram_file_fetch_failed",
     "artifact_missing",
@@ -56,7 +58,9 @@ STAGE_ERROR_MAP: Mapping[str, frozenset[ErrorCode]] = {
     "normalized": frozenset(
         {
             "unsupported_format",
+            "file_parse_failed",
             "artifact_missing",
+            "llm_provider_unavailable",
             "schema_validation_failed",
             "validation_error",
             "internal_error",

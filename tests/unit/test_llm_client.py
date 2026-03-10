@@ -16,6 +16,7 @@ def test_evaluate_maps_openai_compatible_response(monkeypatch: pytest.MonkeyPatc
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
+        request_max_retries=0,
     )
 
     def _fake_request_json(self: OpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
@@ -63,6 +64,7 @@ def test_evaluate_maps_missing_content_to_schema_error(monkeypatch: pytest.Monke
         api_key="test-key",
         base_url="https://agent.timeweb.cloud/v1",
         model="gpt-test",
+        request_max_retries=0,
     )
 
     def _fake_request_json(self: OpenAICompatibleLLMClient, *, payload: dict[str, object]) -> object:
@@ -124,3 +126,45 @@ def test_request_json_maps_400_to_non_retryable(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(LLMAdapterError, match="bad request"):
         client._request_json(payload={"model": "gpt-test"})
+
+
+@pytest.mark.unit
+def test_request_json_retries_on_timeout_and_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpenAICompatibleLLMClient(
+        api_key="test-key",
+        base_url="https://agent.timeweb.cloud/v1",
+        model="gpt-test",
+        request_timeout_seconds=1,
+        request_max_retries=2,
+        request_retry_backoff_ms=10,
+    )
+
+    calls = {"count": 0}
+
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            del exc_type, exc, tb
+            return False
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"{}"}}]}'
+
+    def _fake_urlopen(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise TimeoutError("timed out")
+        return _FakeResponse()
+
+    def _fake_sleep(seconds: float) -> None:
+        del seconds
+
+    monkeypatch.setattr("app.clients.llm.urllib_request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("app.clients.llm.sleep", _fake_sleep)
+
+    response = client._request_json(payload={"model": "gpt-test"})
+    assert isinstance(response, dict)
+    assert calls["count"] == 3

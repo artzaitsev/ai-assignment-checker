@@ -509,7 +509,7 @@ class PostgresWorkRepository:
         if SubmissionFieldGroup.EVALUATION in include:
             joins.append(
                 "LEFT JOIN LATERAL ("
-                "SELECT score_1_10, score_breakdown, organizer_feedback, candidate_feedback, updated_at "
+                "SELECT score_1_10, score_breakdown, organizer_feedback, candidate_feedback, ai_assistance_likelihood, confidence, updated_at "
                 "FROM evaluations e "
                 "WHERE e.submission_id = s.id "
                 "ORDER BY e.updated_at DESC "
@@ -522,6 +522,8 @@ class PostgresWorkRepository:
                     "ev.score_breakdown",
                     "ev.organizer_feedback",
                     "ev.candidate_feedback",
+                    "ev.ai_assistance_likelihood",
+                    "ev.confidence AS ai_assistance_confidence",
                 ]
             )
             joins.append(
@@ -630,6 +632,8 @@ class PostgresWorkRepository:
                     model=_as_str(_record_get(row, "model")),
                     spec_version=_as_str(_record_get(row, "spec_version")),
                     response_language=_as_str(_record_get(row, "response_language")),
+                    ai_assistance_likelihood=_as_float(_record_get(row, "ai_assistance_likelihood")),
+                    ai_assistance_confidence=_as_float(_record_get(row, "ai_assistance_confidence")),
                 )
                 if SubmissionFieldGroup.EVALUATION in include
                 else None,
@@ -933,6 +937,12 @@ def _as_str(value: object | None) -> str | None:
 def _as_int(value: object | None) -> int | None:
     if isinstance(value, int):
         return value
+    return None
+
+
+def _as_float(value: object | None) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
     return None
 
 

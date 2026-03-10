@@ -1,0 +1,18 @@
+{
+  "submission_public_id": "sub_case_001",
+  "assignment_public_id": "asg_db_review_v1",
+  "source_type": "api_upload",
+  "submission_text": "Task 1: Add a NOT NULL constraint to customer.email. Task 2: Add an index on orders.created_at.",
+  "task_solutions": [
+    {
+      "task_id": "task_1",
+      "answer": "Add NOT NULL to customer.email."
+    },
+    {
+      "task_id": "task_2",
+      "answer": "Create an index on orders.created_at."
+    }
+  ],
+  "unmapped_text": "",
+  "schema_version": "normalized:v2"
+}

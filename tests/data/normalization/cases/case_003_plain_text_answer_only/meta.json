@@ -1,0 +1,9 @@
+{
+  "case_id": "case_003_plain_text_answer_only",
+  "assignment_fixture": "assignments/assignment_sql_debug_v1.json",
+  "input_file": "input.md",
+  "input_format": "md",
+  "ocr_mode": "off",
+  "expects_error": false,
+  "expected_output": "expected_normalized.json"
+}
