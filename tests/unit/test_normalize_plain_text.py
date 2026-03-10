@@ -50,6 +50,19 @@ class _SequencedParserLLM:
         )
 
 
+class _SequencedRawLLM:
+    def __init__(self, responses: list[LLMClientResult]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+
+    def evaluate(self, request: object) -> LLMClientResult:
+        del request
+        if not self._responses:
+            raise AssertionError("No more queued LLM responses")
+        self.calls += 1
+        return self._responses.pop(0)
+
+
 class _TrackingParserLLM:
     def __init__(self, raw_json: Mapping[str, object]) -> None:
         self.raw_json = raw_json
@@ -252,21 +265,30 @@ def test_normalize_payload_falls_back_to_assignment_order_when_task_id_missing(c
 
 
 @pytest.mark.unit
-def test_normalize_payload_runs_repair_pass_for_missing_answers() -> None:
-    llm = _SequencedParserLLM(
+def test_normalize_payload_runs_single_repair_pass_for_malformed_json() -> None:
+    llm = _SequencedRawLLM(
         [
-            {
-                "task_solutions": [
-                    {"task_id": "task_1", "answer": "a1"},
-                    {"task_id": "task_2", "answer": ""},
-                ],
-                "unmapped_text": "",
-            },
-            {
-                "task_solutions": [
-                    {"task_id": "task_2", "answer": "repaired-a2"},
-                ],
-            },
+            LLMClientResult(raw_text="{broken-json", raw_json=None, tokens_input=1, tokens_output=1, latency_ms=1),
+            LLMClientResult(
+                raw_text=json.dumps(
+                    {
+                        "task_solutions": [
+                            {"task_id": "task_1", "answer": "a1"},
+                        ],
+                        "unmapped_text": "leftover",
+                    },
+                    ensure_ascii=False,
+                ),
+                raw_json={
+                    "task_solutions": [
+                        {"task_id": "task_1", "answer": "a1"},
+                    ],
+                    "unmapped_text": "leftover",
+                },
+                tokens_input=1,
+                tokens_output=1,
+                latency_ms=1,
+            ),
         ]
     )
     result = normalize_payload(
@@ -276,8 +298,49 @@ def test_normalize_payload_runs_repair_pass_for_missing_answers() -> None:
     assert llm.calls == 2
     assert result.normalized_artifact.task_solutions == [
         {"task_id": "task_1", "answer": "a1"},
-        {"task_id": "task_2", "answer": "repaired-a2"},
     ]
+    assert result.normalized_artifact.unmapped_text == "leftover"
+
+
+@pytest.mark.unit
+def test_normalize_payload_fails_when_malformed_json_repair_is_still_invalid() -> None:
+    llm = _SequencedRawLLM(
+        [
+            LLMClientResult(raw_text="{broken-json", raw_json=None, tokens_input=1, tokens_output=1, latency_ms=1),
+            LLMClientResult(raw_text="still-broken", raw_json=None, tokens_input=1, tokens_output=1, latency_ms=1),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="normalization parser output is not valid JSON"):
+        normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=llm,
+        )
+
+    assert llm.calls == 2
+
+
+@pytest.mark.unit
+def test_normalize_payload_does_not_repair_schema_invalid_json_output() -> None:
+    llm = _SequencedRawLLM(
+        [
+            LLMClientResult(
+                raw_text=json.dumps({"task_solutions": "bad", "unmapped_text": ""}),
+                raw_json={"task_solutions": "bad", "unmapped_text": ""},
+                tokens_input=1,
+                tokens_output=1,
+                latency_ms=1,
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="normalization parser output.task_solutions must be array"):
+        normalize_payload(
+            _command(payload=b"Task 1: one\nTask 2: two", filename="input.txt"),
+            llm=llm,
+        )
+
+    assert llm.calls == 1
 
 
 @pytest.mark.unit

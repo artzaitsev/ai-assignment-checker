@@ -208,6 +208,8 @@ class SubmissionListItem:
         model: str | None
         spec_version: str | None
         response_language: str | None
+        ai_assistance_likelihood: float | None = None
+        ai_assistance_confidence: float | None = None
 
     @dataclass(frozen=True)
     class Ops:

@@ -8,7 +8,7 @@ import pytest
 from app.clients.s3 import build_s3_storage_client
 from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskScoreBreakdown, CriterionScore, parse_task_schema
 from app.domain.errors import DomainInvariantError
-from app.domain.models import CandidateSourceType
+from app.domain.models import CandidateSourceType, SubmissionFieldGroup, SubmissionListQuery
 from app.repositories.postgres import AsyncpgPoolManager, PostgresWorkRepository
 from tests.integration.postgres_test_utils import apply_down, apply_up, require_postgres, reset_public_schema
 
@@ -357,6 +357,93 @@ def test_reproducibility_metadata_persistence_contract() -> None:
             assert eval_row["score_breakdown"]["_reproducibility"]["spec_version"] == "chain-spec:v1"
             assert eval_row["ai_assistance_likelihood"] == pytest.approx(0.35)
             assert eval_row["confidence"] == pytest.approx(0.55)
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_list_submissions_projects_ai_assistance_metrics_for_evaluation() -> None:
+    dsn = require_postgres()
+
+    async def _run() -> None:
+        await reset_public_schema(dsn=dsn)
+        await apply_up(dsn=dsn)
+
+        manager = AsyncpgPoolManager(dsn=dsn)
+        await manager.startup()
+        repo = PostgresWorkRepository(pool_manager=manager)
+        try:
+            candidate, assignment = await _seed_candidate_assignment(repo)
+            created = await repo.create_submission_with_source(
+                candidate_public_id=candidate,
+                assignment_public_id=assignment,
+                source_type="api_upload",
+                source_external_id="projection-ai-metrics",
+                initial_status="evaluated",
+            )
+            await repo.persist_llm_run(
+                submission_id=created.submission_id,
+                provider="openai-compatible",
+                model="model:v1",
+                api_base="https://example.invalid",
+                chain_version="chain:v1",
+                spec_version="chain-spec:v1",
+                response_language="en",
+                temperature=0.1,
+                seed=42,
+                tokens_input=1,
+                tokens_output=1,
+                latency_ms=1,
+            )
+            await repo.persist_evaluation(
+                submission_id=created.submission_id,
+                score_1_10=8,
+                score_breakdown=ScoreBreakdown(
+                    schema_version="task-criteria:v1",
+                    tasks=(
+                        TaskScoreBreakdown(
+                            task_id="task_main",
+                            score_1_10=8,
+                            weight=1.0,
+                            criteria=(
+                                CriterionScore(
+                                    criterion_id="correctness",
+                                    score=8,
+                                    reason="clear",
+                                    weight=1.0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    overall_score_1_10_derived=8,
+                ),
+                organizer_feedback=OrganizerFeedback(strengths=("s",), issues=(), recommendations=()),
+                candidate_feedback=CandidateFeedback(summary="good", what_went_well=(), what_to_improve=()),
+                ai_assistance_likelihood=0.4,
+                ai_assistance_confidence=0.7,
+                reproducibility_subset={
+                    "chain_version": "chain:v1",
+                    "spec_version": "chain-spec:v1",
+                    "model": "model:v1",
+                    "response_language": "en",
+                },
+            )
+
+            items = await repo.list_submissions(
+                query=SubmissionListQuery(
+                    submission_ids=(created.submission_id,),
+                    include=frozenset({SubmissionFieldGroup.CORE, SubmissionFieldGroup.EVALUATION}),
+                    limit=1,
+                    offset=0,
+                )
+            )
+            assert len(items) == 1
+            evaluation = items[0].evaluation
+            assert evaluation is not None
+            assert evaluation.ai_assistance_likelihood == pytest.approx(0.4)
+            assert evaluation.ai_assistance_confidence == pytest.approx(0.7)
         finally:
             await manager.shutdown()
 

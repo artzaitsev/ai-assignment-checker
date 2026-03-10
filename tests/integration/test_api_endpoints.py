@@ -137,7 +137,9 @@ def test_skeleton_api_endpoints_are_available() -> None:
         status_response = client.get(f"/submissions/{created_submission_id}")
         assignments_response = client.get("/assignments")
         assignments_with_task_schema_response = client.get("/assignments", params={"include_task_schema": "true"})
-        feedback_response = client.get("/feedback", params={"submission_id": "demo"})
+        feedback_response = client.get("/feedback", params={"submission_id": created_submission_id})
+        empty_feedback_response = client.get("/feedback", params={"submission_id": "sub_01H0000000000000000000000"})
+        missing_status_response = client.get("/submissions/sub_01H0000000000000000000000")
         export_response = client.post(
             "/exports",
             json={"statuses": ["evaluated"], "limit": 50, "offset": 0},
@@ -158,7 +160,15 @@ def test_skeleton_api_endpoints_are_available() -> None:
     assert assignments_with_task_schema_response.status_code == 200
     assert assignments_with_task_schema_response.json()["items"][0]["task_schema"]["schema_version"] == "task-criteria:v1"
     assert feedback_response.status_code == 200
-    assert feedback_response.json()["items"] == []
+    assert len(feedback_response.json()["items"]) == 1
+    assert feedback_response.json()["items"][0]["submission_id"] == created_submission_id
+    assert feedback_response.json()["items"][0]["organizer_feedback"] is not None
+    assert feedback_response.json()["items"][0]["candidate_feedback"] is not None
+    assert feedback_response.json()["items"][0]["ai_assistance"]["likelihood"] == pytest.approx(0.35)
+    assert feedback_response.json()["items"][0]["ai_assistance"]["confidence"] == pytest.approx(0.55)
+    assert empty_feedback_response.status_code == 200
+    assert empty_feedback_response.json()["items"] == []
+    assert missing_status_response.status_code == 404
     assert export_response.status_code == 200
     assert export_payload["rows_count"] == 1
     assert export_payload["export_id"].startswith("exp_")

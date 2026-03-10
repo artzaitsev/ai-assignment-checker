@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin - Submissions</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.5.2/flowbite.min.js"></script>
+    <style>
+      body {
+        font-family: "Manrope", sans-serif;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen bg-slate-100 text-slate-900">
+    <main class="mx-auto max-w-7xl px-4 py-8 sm:py-10">
+      <section class="rounded-3xl bg-gradient-to-r from-teal-700 via-cyan-700 to-sky-700 p-6 text-white shadow-lg">
+        <p class="text-xs uppercase tracking-[0.22em] text-cyan-100">Admin Console</p>
+        <h1 class="mt-2 text-2xl font-extrabold sm:text-3xl">Review Submissions</h1>
+        <p class="mt-2 text-sm text-cyan-50">Фильтруйте, сортируйте и открывайте детальный разбор каждой отправки.</p>
+      </section>
+
+      <section class="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <form
+          id="admin-filters"
+          class="grid gap-3 md:grid-cols-6"
+          hx-get="/admin/submissions/table"
+          hx-target="#admin-submissions-table"
+          hx-swap="innerHTML"
+        >
+          <div>
+            <label for="status" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Status</label>
+            <input id="status" name="status" value="{{ status }}" class="w-full rounded-lg border border-slate-300 p-2 text-sm" placeholder="evaluated" />
+          </div>
+          <div>
+            <label for="candidate_public_id" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Candidate</label>
+            <input id="candidate_public_id" name="candidate_public_id" value="{{ candidate_public_id }}" class="w-full rounded-lg border border-slate-300 p-2 text-sm" placeholder="cand_..." />
+          </div>
+          <div>
+            <label for="assignment_public_id" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Assignment</label>
+            <input id="assignment_public_id" name="assignment_public_id" value="{{ assignment_public_id }}" class="w-full rounded-lg border border-slate-300 p-2 text-sm" placeholder="asg_..." />
+          </div>
+          <div>
+            <label for="sort_by" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Sort by</label>
+            <select id="sort_by" name="sort_by" class="w-full rounded-lg border border-slate-300 p-2 text-sm">
+              <option value="created_at" {% if sort_by == 'created_at' %}selected{% endif %}>created_at</option>
+              <option value="updated_at" {% if sort_by == 'updated_at' %}selected{% endif %}>updated_at</option>
+              <option value="score_1_10" {% if sort_by == 'score_1_10' %}selected{% endif %}>score_1_10</option>
+              <option value="status" {% if sort_by == 'status' %}selected{% endif %}>status</option>
+            </select>
+          </div>
+          <div>
+            <label for="sort_order" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Order</label>
+            <select id="sort_order" name="sort_order" class="w-full rounded-lg border border-slate-300 p-2 text-sm">
+              <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>desc</option>
+              <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>asc</option>
+            </select>
+          </div>
+          <div class="flex items-end gap-2">
+            <button type="submit" class="rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">Apply</button>
+            <input type="hidden" name="limit" value="{{ limit }}" />
+            <input type="hidden" name="offset" value="{{ offset }}" />
+          </div>
+        </form>
+
+        <div class="mt-4 flex items-center gap-2">
+          <button
+            class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
+            hx-post="/admin/submissions/export"
+            hx-include="#admin-filters"
+            hx-target="#admin-export-result"
+            hx-swap="innerHTML"
+          >
+            Export CSV
+          </button>
+          <div id="admin-export-result" class="text-sm text-slate-600"></div>
+        </div>
+      </section>
+
+      <section class="mt-6 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm sm:p-4">
+        <div id="admin-submissions-table">
+          {% include "admin/submissions_table.html" %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

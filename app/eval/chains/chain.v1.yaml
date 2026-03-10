@@ -29,6 +29,15 @@ prompts:
     Содержимое работы:
     {{normalized.submission_text}}
 
+    Извлеченные ответы по задачам (primary):
+    {{normalized.task_solutions}}
+
+    Неразобранные фрагменты (fallback):
+    {{normalized.unmapped_text}}
+
+    Дополнительный fallback-контекст:
+    {{normalized.fallback_context}}
+
     Task schema:
     {{assignment.task_schema}}
 

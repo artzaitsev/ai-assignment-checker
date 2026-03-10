@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback
 from app.lib.artifacts import build_artifact_repository
 from app.lib.artifacts.types import NormalizedArtifact
 from app.domain.models import (
+    CandidateSourceType,
     SortOrder,
     SubmissionSortBy,
     SubmissionStatus,
@@ -473,6 +475,62 @@ def test_export_handler_uses_storage_contract() -> None:
 
 
 @pytest.mark.unit
+def test_feedback_handler_reads_persisted_feedback_with_optional_filter() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    deps = ApiDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=StubLLMClient(),
+        submissions={},
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="F", last_name="B")
+        assignment = await repository.create_assignment(title="A", description="D", language="en", task_schema=_task_schema())
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="feedback-1",
+            initial_status="evaluated",
+        )
+        await repository.persist_evaluation(
+            submission_id=created.submission_id,
+            score_1_10=9,
+            score_breakdown=_score_breakdown(),
+            organizer_feedback=OrganizerFeedback(strengths=("s",), issues=("i",), recommendations=("r",)),
+            candidate_feedback=CandidateFeedback(summary="ok", what_went_well=("w",), what_to_improve=("m",)),
+            ai_assistance_likelihood=0.25,
+            ai_assistance_confidence=0.5,
+            reproducibility_subset={
+                "chain_version": "chain:v1",
+                "spec_version": "chain-spec:v1",
+                "model": "model:v1",
+                "response_language": "en",
+            },
+        )
+
+        payload = await feedback.list_feedback_handler(deps=deps, submission_id=None)
+        assert len(payload.items) == 1
+        assert payload.items[0]["submission_id"] == created.submission_id
+        ai_assistance = payload.items[0]["ai_assistance"]
+        assert isinstance(ai_assistance, dict)
+        assert ai_assistance["likelihood"] == pytest.approx(0.25)
+        assert ai_assistance["confidence"] == pytest.approx(0.5)
+
+        filtered = await feedback.list_feedback_handler(deps=deps, submission_id=created.submission_id)
+        assert len(filtered.items) == 1
+        empty = await feedback.list_feedback_handler(deps=deps, submission_id="sub_01H0000000000000000000000")
+        assert empty.items == []
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
 def test_deliver_handler_requires_telegram_chat_mapping() -> None:
     storage = StubStorageClient()
     artifact_repository = build_artifact_repository(storage=storage)
@@ -519,6 +577,80 @@ def test_deliver_handler_requires_telegram_chat_mapping() -> None:
         assert result.success is False
         assert result.error_code == "validation_error"
         assert telegram.sent_texts == []
+        assert len(repository.deliveries) == 1
+        assert repository.deliveries[0]["status"] == "failed"
+        assert repository.deliveries[0]["attempts"] == 1
+        assert repository.deliveries[0]["last_error_code"] == "validation_error"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_deliver_handler_persists_retryable_transport_failure_with_attempt() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    llm = StubLLMClient()
+
+    class _FailingTelegramClient:
+        sent_texts: list[tuple[str, str]] = []
+
+        def send_text(self, *, chat_id: str, message: str) -> str | None:
+            del chat_id, message
+            raise TelegramRetryableError("transport failed")
+
+        def poll_events(self, *, timeout: int = 30, offset: str | None = None):
+            del timeout, offset
+            return []
+
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=_FailingTelegramClient(),
+        llm=llm,
+    )
+
+    async def _run() -> None:
+        candidate = await repository.get_or_create_candidate_by_source(
+            source_type=CandidateSourceType.TELEGRAM_CHAT,
+            source_external_id="chat-retry",
+            first_name="Retry",
+            last_name="Case",
+        )
+        assignment = await repository.create_assignment(title="D", description="D", language="en", task_schema=_task_schema())
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="deliver-transport-retry",
+            initial_status="evaluated",
+        )
+        await repository.persist_evaluation(
+            submission_id=created.submission_id,
+            score_1_10=8,
+            score_breakdown=_score_breakdown(),
+            organizer_feedback=OrganizerFeedback(strengths=(), issues=(), recommendations=()),
+            candidate_feedback=CandidateFeedback(summary="ok", what_went_well=(), what_to_improve=()),
+            ai_assistance_likelihood=0.1,
+            ai_assistance_confidence=0.1,
+            reproducibility_subset={
+                "chain_version": "chain:v1",
+                "spec_version": "spec:v1",
+                "model": "model:v1",
+                "response_language": "en",
+            },
+        )
+        result = await deliver.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=created.submission_id, stage="exports", attempt=3),
+        )
+        assert result.success is False
+        assert result.error_code == "delivery_transport_failed"
+        assert len(repository.deliveries) == 1
+        assert repository.deliveries[0]["status"] == "failed"
+        assert repository.deliveries[0]["attempts"] == 3
+        assert repository.deliveries[0]["last_error_code"] == "delivery_transport_failed"
 
     asyncio.run(_run())
 
@@ -600,7 +732,7 @@ def test_status_handler_prefers_repository_state_over_stale_uploaded_trace() -> 
 
 
 @pytest.mark.unit
-def test_status_handler_keeps_in_memory_pipeline_state_when_ahead_of_repository() -> None:
+def test_status_handler_keeps_repository_state_authoritative_when_trace_is_ahead() -> None:
     storage = StubStorageClient()
     repository = InMemoryWorkRepository()
     deps = ApiDeps(
@@ -634,9 +766,38 @@ def test_status_handler_keeps_in_memory_pipeline_state_when_ahead_of_repository(
 
         payload = await status.get_submission_status_with_trace_handler(deps, submission_id=submission_id)
         assert payload is not None
-        assert payload.state == "failed_evaluation"
+        assert payload.state == "uploaded"
         assert payload.transitions is not None
         assert payload.transitions[-1] == "failed_evaluation"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_status_handler_returns_none_when_submission_exists_only_in_trace() -> None:
+    storage = StubStorageClient()
+    repository = InMemoryWorkRepository()
+    deps = ApiDeps(
+        repository=repository,
+        artifact_repository=build_artifact_repository(storage=storage),
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=StubLLMClient(),
+        submissions={},
+    )
+
+    async def _run() -> None:
+        submission_id = "sub_trace_only"
+        deps.submissions[submission_id] = SubmissionRecord(
+            submission_id=submission_id,
+            state="failed_evaluation",
+            candidate_public_id="cand_01H0000000000000000000000",
+            assignment_public_id="asg_01H0000000000000000000000",
+            transitions=["uploaded", "failed_evaluation"],
+            artifacts={"raw": "s3://raw/sub_trace_only/task.txt"},
+        )
+        payload = await status.get_submission_status_with_trace_handler(deps, submission_id=submission_id)
+        assert payload is None
 
     asyncio.run(_run())
 
@@ -764,6 +925,109 @@ def test_normalize_handler_maps_llm_retryable_errors_as_recoverable() -> None:
         assert result.success is False
         assert result.error_code == "llm_provider_unavailable"
         assert result.retry_classification == "recoverable"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_normalize_handler_rejects_unsupported_format_before_parser_call() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+
+    class _NeverCalledLLM:
+        def evaluate(self, request: object):
+            del request
+            raise AssertionError("LLM must not be called for unsupported format")
+
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=_NeverCalledLLM(),
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="N", last_name="R")
+        assignment = await repository.create_assignment(
+            title="Normalize",
+            description="Normalize plain text",
+            language="en",
+            task_schema=_task_schema(),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="norm-unsupported",
+            initial_status="uploaded",
+            metadata_json={"filename": "payload.bin"},
+        )
+        submission_id = created.submission_id
+        raw_ref = storage.put_bytes(key=f"raw/{submission_id}/payload.bin", payload=b"\x00\x01\x02\x03")
+        await repository.link_artifact(
+            item_id=submission_id,
+            stage="raw",
+            artifact_ref=raw_ref,
+            artifact_version=None,
+        )
+
+        result = await normalize.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=submission_id, stage="normalized", attempt=1),
+        )
+        assert result.success is False
+        assert result.error_code == "unsupported_format"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_normalize_handler_maps_corrupt_supported_file_to_parse_failed() -> None:
+    storage = StubStorageClient()
+    artifact_repository = build_artifact_repository(storage=storage)
+    repository = InMemoryWorkRepository()
+    deps = WorkerDeps(
+        repository=repository,
+        artifact_repository=artifact_repository,
+        storage=storage,
+        telegram=StubTelegramClient(),
+        llm=StubLLMClient(),
+    )
+
+    async def _run() -> None:
+        candidate = await repository.create_candidate(first_name="N", last_name="R")
+        assignment = await repository.create_assignment(
+            title="Normalize",
+            description="Normalize plain text",
+            language="en",
+            task_schema=_task_schema(),
+        )
+        created = await repository.create_submission_with_source(
+            candidate_public_id=candidate.candidate_public_id,
+            assignment_public_id=assignment.assignment_public_id,
+            source_type="api_upload",
+            source_external_id="norm-corrupt-docx",
+            initial_status="uploaded",
+            metadata_json={"filename": "input.docx"},
+        )
+        submission_id = created.submission_id
+        payload = (Path("tests/data/normalization/cases/case_015_corrupt_docx_supported") / "input.docx").read_bytes()
+        raw_ref = storage.put_bytes(key=f"raw/{submission_id}/input.docx", payload=payload)
+        await repository.link_artifact(
+            item_id=submission_id,
+            stage="raw",
+            artifact_ref=raw_ref,
+            artifact_version=None,
+        )
+
+        result = await normalize.process_claim(
+            deps,
+            claim=WorkItemClaim(item_id=submission_id, stage="normalized", attempt=1),
+        )
+        assert result.success is False
+        assert result.error_code == "file_parse_failed"
 
     asyncio.run(_run())
 

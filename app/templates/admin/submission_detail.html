@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin - Submission Detail</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.5.2/flowbite.min.js"></script>
+    <style>
+      body {
+        font-family: "Manrope", sans-serif;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen bg-slate-100 text-slate-900">
+    <main class="mx-auto max-w-6xl px-4 py-8">
+      <a href="/admin/submissions" class="inline-flex items-center text-sm font-semibold text-sky-700 hover:text-sky-900">&larr; Back to listing</a>
+
+      <section class="mt-4 rounded-3xl bg-white p-6 shadow-sm">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h1 class="text-2xl font-extrabold">Submission {{ item.core.public_id }}</h1>
+          <span class="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-white">{{ item.core.status }}</span>
+        </div>
+
+        <div class="mt-4 grid gap-3 md:grid-cols-2">
+          <div class="rounded-xl border border-slate-200 p-3">
+            <p class="text-xs uppercase tracking-wide text-slate-500">Candidate</p>
+            <p class="mt-1 font-mono text-sm">{{ item.candidate.public_id if item.candidate else "-" }}</p>
+          </div>
+          <div class="rounded-xl border border-slate-200 p-3">
+            <p class="text-xs uppercase tracking-wide text-slate-500">Assignment</p>
+            <p class="mt-1 font-mono text-sm">{{ item.assignment.public_id if item.assignment else "-" }}</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="mt-4 grid gap-4 lg:grid-cols-2">
+        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500">Organizer feedback</h2>
+          {% if item.evaluation and item.evaluation.organizer_feedback %}
+          <div class="mt-3 space-y-3 text-sm">
+            <div>
+              <p class="font-semibold text-emerald-700">Strengths</p>
+              <ul class="mt-1 list-disc space-y-1 pl-5">
+                {% for point in item.evaluation.organizer_feedback.strengths %}
+                <li>{{ point }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <p class="font-semibold text-rose-700">Issues</p>
+              <ul class="mt-1 list-disc space-y-1 pl-5">
+                {% for point in item.evaluation.organizer_feedback.issues %}
+                <li>{{ point }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div>
+              <p class="font-semibold text-sky-700">Recommendations</p>
+              <ul class="mt-1 list-disc space-y-1 pl-5">
+                {% for point in item.evaluation.organizer_feedback.recommendations %}
+                <li>{{ point }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+          {% else %}
+          <p class="mt-2 text-sm text-slate-500">No organizer feedback yet.</p>
+          {% endif %}
+        </article>
+
+        <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500">Candidate feedback + metrics</h2>
+          {% if item.evaluation and item.evaluation.candidate_feedback %}
+          <p class="mt-3 text-sm font-semibold">{{ item.evaluation.candidate_feedback.summary }}</p>
+          <div class="mt-3 text-sm">
+            <p class="font-semibold text-emerald-700">What went well</p>
+            <ul class="mt-1 list-disc space-y-1 pl-5">
+              {% for point in item.evaluation.candidate_feedback.what_went_well %}
+              <li>{{ point }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          <div class="mt-3 text-sm">
+            <p class="font-semibold text-rose-700">What to improve</p>
+            <ul class="mt-1 list-disc space-y-1 pl-5">
+              {% for point in item.evaluation.candidate_feedback.what_to_improve %}
+              <li>{{ point }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% else %}
+          <p class="mt-2 text-sm text-slate-500">No candidate feedback yet.</p>
+          {% endif %}
+
+          <div class="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+            <p class="font-semibold text-slate-700">AI assistance</p>
+            {% if item.evaluation and item.evaluation.ai_assistance_likelihood is not none %}
+            <p class="mt-1">Likelihood: <span class="font-semibold">{{ "%.2f"|format(item.evaluation.ai_assistance_likelihood) }}</span></p>
+            <p>Confidence: <span class="font-semibold">{{ "%.2f"|format(item.evaluation.ai_assistance_confidence or 0.0) }}</span></p>
+            {% else %}
+            <p class="mt-1 text-slate-500">Not available.</p>
+            {% endif %}
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

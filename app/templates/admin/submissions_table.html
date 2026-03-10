@@ -1,0 +1,43 @@
+<div class="overflow-x-auto">
+  <table class="min-w-full divide-y divide-slate-200 text-sm">
+    <thead class="bg-slate-50">
+      <tr>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Submission</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Status</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Candidate</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Assignment</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Score</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">AI metrics</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Errors</th>
+        <th class="px-3 py-2 text-left font-semibold text-slate-600">Action</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 bg-white">
+      {% for item in items %}
+      <tr>
+        <td class="px-3 py-2 font-mono text-xs">{{ item.core.public_id }}</td>
+        <td class="px-3 py-2">{{ item.core.status }}</td>
+        <td class="px-3 py-2 font-mono text-xs">{{ item.candidate.public_id if item.candidate else "-" }}</td>
+        <td class="px-3 py-2 font-mono text-xs">{{ item.assignment.public_id if item.assignment else "-" }}</td>
+        <td class="px-3 py-2">{{ item.evaluation.score_1_10 if item.evaluation and item.evaluation.score_1_10 is not none else "-" }}</td>
+        <td class="px-3 py-2 text-xs">
+          {% if item.evaluation and item.evaluation.ai_assistance_likelihood is not none %}
+          L={{ "%.2f"|format(item.evaluation.ai_assistance_likelihood) }}, C={{ "%.2f"|format(item.evaluation.ai_assistance_confidence or 0.0) }}
+          {% else %}
+          -
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs text-rose-700">{{ item.ops.last_error_code if item.ops and item.ops.last_error_code else "-" }}</td>
+        <td class="px-3 py-2">
+          <a href="/admin/submissions/{{ item.core.public_id }}" class="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700">Open</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not items %}
+      <tr>
+        <td class="px-3 py-5 text-center text-sm text-slate-500" colspan="8">No submissions for current filters.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

@@ -25,6 +25,16 @@ async def _process(claim: WorkItemClaim) -> ProcessResult:
     )
 
 
+async def _process_retryable_failure(claim: WorkItemClaim) -> ProcessResult:
+    del claim
+    return ProcessResult(
+        success=False,
+        detail="network issue",
+        error_code="delivery_transport_failed",
+        retry_classification="recoverable",
+    )
+
+
 def _task_schema():
     return parse_task_schema(
         {
@@ -89,6 +99,9 @@ def test_worker_loop_run_once_processes_claim() -> None:
 
     assert did_work is True
     assert repository.finalizations[0][0] == "job-1"
+    assert loop.last_run_diagnostics is not None
+    assert loop.last_run_diagnostics.success is True
+    assert loop.last_run_diagnostics.stage == "exports"
 
 
 @pytest.mark.unit
@@ -273,3 +286,42 @@ def test_runner_reclaims_expired_claims_before_tick() -> None:
 
     asyncio.run(_run())
     assert repository.reclaim_calls >= 1
+
+
+@pytest.mark.unit
+def test_runner_collects_stage_metrics_from_failed_claim() -> None:
+    from app.workers.runner import run_worker_until_stopped
+
+    repository = InMemoryWorkRepository(
+        queue=[WorkItemClaim(item_id="job-failed", stage="exports", attempt=1)]
+    )
+    loop = WorkerLoop(
+        role="worker-deliver",
+        stage="exports",
+        repository=repository,
+        process=_process_retryable_failure,
+    )
+    stop_event = asyncio.Event()
+    settings = WorkerRuntimeSettings(poll_interval_ms=1, idle_backoff_ms=1, error_backoff_ms=1)
+    state = WorkerRuntimeState()
+
+    async def _run() -> None:
+        task = asyncio.create_task(
+            run_worker_until_stopped(
+                worker_loop=loop,
+                role="worker-deliver",
+                run_id="run-metrics",
+                stop_event=stop_event,
+                settings=settings,
+                logger=logging.getLogger("test"),
+                state=state,
+            )
+        )
+        await asyncio.sleep(0.02)
+        stop_event.set()
+        await task
+
+    asyncio.run(_run())
+    assert state.stage_duration_ms_total.get("exports", 0) >= 0
+    assert state.stage_error_total.get("exports:delivery_transport_failed", 0) >= 1
+    assert state.stage_retry_total.get("exports:delivery_transport_failed", 0) >= 1

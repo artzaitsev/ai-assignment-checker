@@ -117,6 +117,8 @@ def test_worker_loops_cover_full_backend_flow() -> None:
 @dataclass
 class _MultitaskLLMClient(StubLLMClient):
     def evaluate(self, request):  # type: ignore[override]
+        if request.system_prompt.startswith("NORMALIZATION_PARSER"):
+            return super().evaluate(request)
         self.calls.append(request)
         return LLMClientResult(
             raw_text="",
@@ -234,8 +236,9 @@ def test_worker_evaluate_supports_multitask_assignment_criteria() -> None:
         assert repository.evaluations
         score_payload = repository.evaluations[0]["score_breakdown"]
         assert isinstance(score_payload, dict)
-        assert score_payload["task_order"] == ["task_1", "task_2"]
-        assert score_payload["task_scores"] == {"task_1": 8, "task_2": 9}
+        assert score_payload["schema_version"] == "task-criteria:v1"
+        task_scores = {task["task_id"]: task["score_1_10"] for task in score_payload["tasks"]}
+        assert task_scores == {"task_1": 8, "task_2": 9}
         assert repository.evaluations[0]["score_1_10"] == 8
 
     asyncio.run(_run())

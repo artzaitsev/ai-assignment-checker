@@ -63,9 +63,9 @@ _PDF_MIN_PAGE_TEXT_CHARS = 48
 _PDF_MIN_TOTAL_TEXT_CHARS = 80
 _PDF_PAGE_DELIMITER_TEMPLATE = "\n\n--- page {page} ---\n\n"
 _NORMALIZATION_PARSER_SYSTEM_PROMPT = "NORMALIZATION_PARSER: return strict JSON with task_solutions[] and unmapped_text"
-_NORMALIZATION_REPAIR_SYSTEM_PROMPT = (
-    "NORMALIZATION_PARSER_REPAIR: return strict JSON object with task_solutions[] only; "
-    "include only missing_task_ids, one entry per task_id, each answer must be string"
+_NORMALIZATION_MALFORMED_JSON_REPAIR_SYSTEM_PROMPT = (
+    "NORMALIZATION_PARSER_REPAIR: repair malformed JSON and return strict JSON object "
+    "with task_solutions[] and unmapped_text"
 )
 
 
@@ -691,31 +691,46 @@ def _invoke_normalization_parser(*, parser_input: NormalizationParserInput, llm:
         )
     )
 
-    raw_output: object = result.raw_json
+    raw_output, malformed = _decode_parser_response_payload(
+        raw_json=result.raw_json,
+        raw_text=result.raw_text,
+    )
+    if malformed:
+        repaired_raw_json, repaired_raw_text = _repair_malformed_parser_json(
+            parser_input=parser_input,
+            malformed_output=result.raw_text,
+            llm=llm,
+        )
+        raw_output, malformed = _decode_parser_response_payload(raw_json=repaired_raw_json, raw_text=repaired_raw_text)
+        if malformed:
+            raise ValueError("normalization parser output is not valid JSON")
+
     if raw_output is None:
-        try:
-            raw_output = json.loads(result.raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError("normalization parser output is not valid JSON") from exc
+        raise ValueError("normalization parser output is not valid JSON")
+
     expected_task_ids = tuple(task.task_id for task in parser_input.tasks)
-    parser_output = _decode_parser_output(raw_output, expected_task_ids=expected_task_ids)
-    return _repair_missing_task_answers(parser_input=parser_input, parser_output=parser_output, llm=llm)
+    return _decode_parser_output(raw_output, expected_task_ids=expected_task_ids)
 
 
-def _repair_missing_task_answers(
+def _decode_parser_response_payload(
+    *,
+    raw_json: object | None,
+    raw_text: str,
+) -> tuple[object | None, bool]:
+    if raw_json is not None:
+        return raw_json, False
+    try:
+        return json.loads(raw_text), False
+    except json.JSONDecodeError:
+        return None, True
+
+
+def _repair_malformed_parser_json(
     *,
     parser_input: NormalizationParserInput,
-    parser_output: NormalizationParserOutput,
+    malformed_output: str,
     llm: LLMClient,
-) -> NormalizationParserOutput:
-    expected_task_ids = tuple(task.task_id for task in parser_input.tasks)
-    current_by_task_id: dict[str, str] = {solution.task_id: solution.answer for solution in parser_output.task_solutions}
-    missing_task_ids = tuple(
-        task_id for task_id in expected_task_ids if task_id not in current_by_task_id or not current_by_task_id[task_id].strip()
-    )
-    if not missing_task_ids:
-        return parser_output
-
+) -> tuple[object | None, str]:
     repair_payload = {
         "assignment_public_id": parser_input.assignment_public_id,
         "language": parser_input.language,
@@ -728,11 +743,15 @@ def _repair_missing_task_answers(
             for task in parser_input.tasks
         ],
         "submission_text": parser_input.submission_text,
-        "missing_task_ids": list(missing_task_ids),
+        "malformed_output": malformed_output,
     }
+    logger.warning(
+        "normalization parser output is malformed JSON; attempting bounded repair",
+        extra={"component": COMPONENT_ID},
+    )
     repair_result = llm.evaluate(
         LLMClientRequest(
-            system_prompt=_NORMALIZATION_REPAIR_SYSTEM_PROMPT,
+            system_prompt=_NORMALIZATION_MALFORMED_JSON_REPAIR_SYSTEM_PROMPT,
             user_prompt=json.dumps(repair_payload, ensure_ascii=False, sort_keys=True),
             model="normalization-parser:v1",
             temperature=0.0,
@@ -740,71 +759,7 @@ def _repair_missing_task_answers(
             response_language=parser_input.language,
         )
     )
-
-    repair_raw_output: object = repair_result.raw_json
-    if repair_raw_output is None:
-        try:
-            repair_raw_output = json.loads(repair_result.raw_text)
-        except json.JSONDecodeError:
-            logger.warning(
-                "normalization parser repair output is not valid JSON; keeping original parser output",
-                extra={"component": COMPONENT_ID},
-            )
-            return parser_output
-
-    repaired_answers = _decode_repair_task_answers(raw_output=repair_raw_output, missing_task_ids=missing_task_ids)
-    if not repaired_answers:
-        return parser_output
-
-    merged_solutions: list[NormalizationTaskSolution] = []
-    for solution in parser_output.task_solutions:
-        if solution.task_id in repaired_answers and (not solution.answer.strip() or repaired_answers[solution.task_id].strip()):
-            merged_solutions.append(NormalizationTaskSolution(task_id=solution.task_id, answer=repaired_answers[solution.task_id]))
-        else:
-            merged_solutions.append(solution)
-
-    present_ids = {solution.task_id for solution in merged_solutions}
-    for task_id in missing_task_ids:
-        if task_id in repaired_answers and task_id not in present_ids:
-            merged_solutions.append(NormalizationTaskSolution(task_id=task_id, answer=repaired_answers[task_id]))
-
-    logger.info(
-        "normalization parser repair pass completed",
-        extra={
-            "component": COMPONENT_ID,
-            "missing_task_ids": list(missing_task_ids),
-            "repaired_task_ids": sorted(repaired_answers.keys()),
-        },
-    )
-    return NormalizationParserOutput(task_solutions=tuple(merged_solutions), unmapped_text=parser_output.unmapped_text)
-
-
-def _decode_repair_task_answers(*, raw_output: object, missing_task_ids: tuple[str, ...]) -> dict[str, str]:
-    if not isinstance(raw_output, dict):
-        logger.warning(
-            "normalization parser repair output must be object; keeping original parser output",
-            extra={"component": COMPONENT_ID},
-        )
-        return {}
-    raw_task_solutions = raw_output.get("task_solutions")
-    if not isinstance(raw_task_solutions, list):
-        logger.warning(
-            "normalization parser repair output.task_solutions must be array; keeping original parser output",
-            extra={"component": COMPONENT_ID},
-        )
-        return {}
-
-    allowed_task_ids = set(missing_task_ids)
-    repaired_answers: dict[str, str] = {}
-    for item in raw_task_solutions:
-        if not isinstance(item, dict):
-            continue
-        raw_task_id = item.get("task_id")
-        if not isinstance(raw_task_id, str) or raw_task_id not in allowed_task_ids or raw_task_id in repaired_answers:
-            continue
-        answer = item.get("answer", item.get("solution", ""))
-        repaired_answers[raw_task_id] = _coerce_answer_text(answer=answer, task_id=raw_task_id)
-    return repaired_answers
+    return repair_result.raw_json, repair_result.raw_text
 
 
 def _decode_parser_output(raw_output: object, *, expected_task_ids: tuple[str, ...]) -> NormalizationParserOutput:
