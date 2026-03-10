@@ -32,6 +32,10 @@
 
   <div>
     <label for="assignment_public_id" class="mb-1 block text-sm font-medium text-slate-700">Задание</label>
+    {% if assignment_locked and assignments|length == 1 %}
+    <input type="hidden" id="assignment_public_id" name="assignment_public_id" value="{{ assignments[0].assignment_public_id }}" />
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm text-slate-700">{{ assignments[0].title }}</div>
+    {% else %}
     <select
       id="assignment_public_id"
       name="assignment_public_id"
@@ -44,6 +48,7 @@
       </option>
       {% endfor %}
     </select>
+    {% endif %}
   </div>
 
   <div>

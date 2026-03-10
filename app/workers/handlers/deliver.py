@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from app.clients.telegram import TelegramNonRetryableError, TelegramRetryableError
 from app.domain.dto import BuildFeedbackCommand
 from app.domain.error_taxonomy import classify_error, resolve_stage_error
@@ -15,6 +17,7 @@ from app.domain.use_cases.deliver import build_feedback
 from app.workers.handlers.deps import WorkerDeps
 
 COMPONENT_ID = "worker.deliver.process_claim"
+logger = logging.getLogger("runtime")
 
 
 async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessResult:
@@ -58,23 +61,33 @@ async def process_claim(deps: WorkerDeps, *, claim: WorkItemClaim) -> ProcessRes
             source_type=CandidateSourceType.TELEGRAM_CHAT,
         )
         if chat_id is None:
-            error_code = resolve_stage_error(stage="exports", code="validation_error")
-            await _persist_failed_delivery(
-                deps,
-                claim=claim,
-                error_code=error_code,
+            await deps.repository.persist_delivery(
+                submission_id=claim.item_id,
+                channel="telegram",
+                status="skipped",
+                attempts=claim.attempt,
+            )
+            logger.info(
+                "delivery skipped: candidate has no telegram chat mapping",
+                extra={"component": COMPONENT_ID, "submission_id": claim.item_id},
             )
             return ProcessResult(
-                success=False,
-                detail=f"telegram_chat mapping is missing for submission: {claim.item_id}",
-                error_code=error_code,
-                retry_classification=classify_error(error_code),
+                success=True,
+                detail="delivery skipped: candidate has no telegram chat mapping",
+            )
+
+        result_link = _build_result_link(deps=deps, submission_id=claim.item_id)
+        message_text = feedback.message_text
+        if result_link is not None:
+            message_text = (
+                f"{feedback.message_text}\n\n"
+                f"Результат проверки: {result_link}"
             )
 
         try:
             external_message_id = deps.telegram.send_text(
                 chat_id=chat_id,
-                message=feedback.message_text,
+                message=message_text,
             )
         except TelegramRetryableError as exc:
             error_code = resolve_stage_error(stage="exports", code="delivery_transport_failed")
@@ -169,3 +182,12 @@ async def _persist_failed_delivery(
         attempts=claim.attempt,
         last_error_code=error_code,
     )
+
+
+def _build_result_link(*, deps: WorkerDeps, submission_id: str) -> str | None:
+    if deps.telegram_link_settings is None:
+        return None
+    base_url = deps.telegram_link_settings.public_web_base_url.strip().rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/candidate/apply/result/{submission_id}"

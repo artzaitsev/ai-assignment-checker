@@ -6,10 +6,16 @@
 - `api.create_candidate` -> `app/api/handlers/candidates.py`
 - `api.create_assignment` -> `app/api/handlers/assignments.py`
 - `api.list_assignments` -> `app/api/handlers/assignments.py`
+- `api.get_assignment` -> `app/api/handlers/assignments.py`
+- `api.update_assignment` -> `app/api/handlers/assignments.py`
+- `api.delete_assignment` -> `app/api/handlers/assignments.py`
 - `api.get_submission_status` -> `app/api/handlers/status.py`
 - `api.list_feedback` -> `app/api/handlers/feedback.py`
 - `api.export_results` -> `app/api/handlers/exports.py`
 - `api.download_export` -> `app/api/http_app.py`
+- `api.admin.assignments` -> `app/api/handlers/admin_assignments.py`
+- `api.candidate.fixed_assignment_apply` -> `app/api/http_app.py`
+- `api.candidate.assignment_template_docx` -> `app/api/http_app.py`
 
 ## Воркеры
 

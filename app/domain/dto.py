@@ -171,6 +171,7 @@ class EvaluateSubmissionResult:
     ai_assistance_likelihood: float
     ai_assistance_confidence: float
     reproducibility_subset: dict[str, str]
+    evaluation_diagnostics: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

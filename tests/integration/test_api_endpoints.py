@@ -7,6 +7,7 @@ from app.api.http_app import build_app
 from app.clients.stub import StubTelegramClient
 from app.domain.evaluation_contracts import CandidateFeedback, OrganizerFeedback, ScoreBreakdown, TaskScoreBreakdown, CriterionScore
 from app.domain.models import CandidateSourceType, TelegramInboundEvent, TelegramLinkSettings, WorkItemClaim
+from app.domain.telegram_settings import TELEGRAM_DEFAULT_ASSIGNMENT_STREAM
 from app.domain.use_cases.telegram_entry_links import sign_entry_token
 from app.workers.handlers import ingest_telegram
 from app.workers.handlers.deps import WorkerDeps
@@ -236,7 +237,13 @@ def test_telegram_polling_start_path_is_idempotent_without_submission_side_effec
     )
 
     with TestClient(app) as client:
-        _candidate_public_id, _assignment_public_id = seed_candidate_and_assignment(client=client)
+        _candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        asyncio.run(
+            container.repository.set_stream_cursor(
+                stream=TELEGRAM_DEFAULT_ASSIGNMENT_STREAM,
+                cursor=assignment_public_id,
+            )
+        )
 
         assert isinstance(container.telegram, StubTelegramClient)
         container.telegram.events.append(
@@ -280,7 +287,7 @@ def test_telegram_polling_start_path_is_idempotent_without_submission_side_effec
         assert "no new telegram events" in second.detail
         assert container.telegram.sent_texts
         assert container.telegram.sent_texts[0][0] == "chat-42"
-        assert "/candidate/apply?token=" in container.telegram.sent_texts[0][1]
+        assert f"/candidate/assignments/{assignment_public_id}/apply?token=" in container.telegram.sent_texts[0][1]
 
 
 @pytest.mark.integration
@@ -296,6 +303,7 @@ def test_candidate_apply_html_flow_creates_submission_and_chat_mapping() -> None
 
     with TestClient(app) as client:
         _candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        assert isinstance(container.telegram, StubTelegramClient)
         assert container.api_deps.telegram_link_settings is not None
         token = sign_entry_token(
             chat_id="chat-apply-1",
@@ -327,6 +335,7 @@ def test_candidate_apply_html_flow_creates_submission_and_chat_mapping() -> None
         assert "Работа принята" in submit_response.text
         assert "apply_session=" in submit_response.headers.get("set-cookie", "")
         assert container.api_deps.submissions
+        assert any(sent_chat_id == "chat-apply-1" for sent_chat_id, _ in container.telegram.sent_texts)
 
         resolved = asyncio.run(
             container.repository.get_or_create_candidate_by_source(
@@ -343,6 +352,41 @@ def test_candidate_apply_html_flow_creates_submission_and_chat_mapping() -> None
             )
         )
         assert chat_external_id == "chat-apply-1"
+
+
+@pytest.mark.integration
+def test_fixed_assignment_apply_accepts_token_and_acknowledges_in_telegram() -> None:
+    role = validate_role("api")
+    container = build_runtime_container(role)
+    app = build_app(
+        role=role.name,
+        run_id="integration-fixed-apply-token",
+        worker_loop=container.worker_loop,
+        api_deps=container.api_deps,
+    )
+
+    with TestClient(app) as client:
+        _candidate_public_id, assignment_public_id = seed_candidate_and_assignment(client=client)
+        assert isinstance(container.telegram, StubTelegramClient)
+        assert container.api_deps.telegram_link_settings is not None
+        token = sign_entry_token(
+            chat_id="chat-fixed-1",
+            assignment_hint=assignment_public_id,
+            settings=container.api_deps.telegram_link_settings,
+        )
+
+        page_response = client.get(f"/candidate/assignments/{assignment_public_id}/apply", params={"token": token})
+        assert page_response.status_code == 200
+        assert "apply_session=" in page_response.headers.get("set-cookie", "")
+
+        submit_response = client.post(
+            f"/candidate/assignments/{assignment_public_id}/submit",
+            data={"first_name": "Fixed", "last_name": "Token"},
+            files={"file": ("task.py", b"print('hello')", "text/x-python")},
+        )
+        assert submit_response.status_code == 200
+        assert "Работа принята" in submit_response.text
+        assert any(chat_id == "chat-fixed-1" and "Ваше решение принято" in message for chat_id, message in container.telegram.sent_texts)
 
 
 @pytest.mark.integration

@@ -79,6 +79,26 @@ class WorkRepository(Protocol):
         include_task_schema: bool = False,
     ) -> list[AssignmentSnapshot]: ...
 
+    async def get_assignment_by_public_id(
+        self,
+        *,
+        assignment_public_id: str,
+        include_task_schema: bool = False,
+    ) -> AssignmentSnapshot | None: ...
+
+    async def update_assignment(
+        self,
+        *,
+        assignment_public_id: str,
+        title: str,
+        description: str,
+        language: str,
+        task_schema: TaskSchema,
+        is_active: bool,
+    ) -> AssignmentSnapshot | None: ...
+
+    async def delete_assignment(self, *, assignment_public_id: str) -> bool: ...
+
     async def ensure_no_null_task_schema_rows(self) -> None: ...
 
     async def create_submission_with_source(

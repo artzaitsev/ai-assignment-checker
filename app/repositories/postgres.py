@@ -50,6 +50,9 @@ SQL_GET_STREAM_CURSOR = load_sql("get_stream_cursor.sql")
 SQL_SET_STREAM_CURSOR = load_sql("set_stream_cursor.sql")
 SQL_CREATE_ASSIGNMENT = load_sql("create_assignment.sql")
 SQL_LIST_ASSIGNMENTS = load_sql("list_assignments.sql")
+SQL_GET_ASSIGNMENT_BY_PUBLIC_ID = load_sql("get_assignment_by_public_id.sql")
+SQL_UPDATE_ASSIGNMENT_BY_PUBLIC_ID = load_sql("update_assignment_by_public_id.sql")
+SQL_DELETE_ASSIGNMENT_BY_PUBLIC_ID = load_sql("delete_assignment_by_public_id.sql")
 SQL_CLAIM_NEXT = load_sql("claim_next.sql")
 SQL_CREATE_SUBMISSION = load_sql("create_submission.sql")
 SQL_FIND_SOURCE = load_sql("find_source.sql")
@@ -72,6 +75,10 @@ SQL_INSERT_DELIVERY = load_sql("insert_delivery.sql")
 
 def _is_unique_violation(exc: Exception) -> bool:
     return getattr(exc, "sqlstate", None) == "23505"
+
+
+def _is_foreign_key_violation(exc: Exception) -> bool:
+    return getattr(exc, "sqlstate", None) == "23503"
 
 
 @dataclass
@@ -330,6 +337,69 @@ class PostgresWorkRepository:
             for row in rows
         ]
 
+    async def get_assignment_by_public_id(
+        self,
+        *,
+        assignment_public_id: str,
+        include_task_schema: bool = False,
+    ) -> AssignmentSnapshot | None:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(SQL_GET_ASSIGNMENT_BY_PUBLIC_ID, assignment_public_id)
+        if row is None:
+            return None
+        return AssignmentSnapshot(
+            assignment_public_id=str(_record_get(row, "public_id") or ""),
+            title=str(_record_get(row, "title") or ""),
+            description=str(_record_get(row, "description") or ""),
+            language=str(_record_get(row, "language") or ""),
+            task_schema=_parse_optional_task_schema(_record_get(row, "task_schema")) if include_task_schema else None,
+            is_active=_record_get(row, "is_active") is True,
+        )
+
+    async def update_assignment(
+        self,
+        *,
+        assignment_public_id: str,
+        title: str,
+        description: str,
+        language: str,
+        task_schema: TaskSchema,
+        is_active: bool,
+    ) -> AssignmentSnapshot | None:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                SQL_UPDATE_ASSIGNMENT_BY_PUBLIC_ID,
+                assignment_public_id,
+                title,
+                description,
+                language,
+                task_schema.to_dict(),
+                is_active,
+            )
+        if row is None:
+            return None
+        return AssignmentSnapshot(
+            assignment_public_id=str(_record_get(row, "public_id") or ""),
+            title=str(_record_get(row, "title") or ""),
+            description=str(_record_get(row, "description") or ""),
+            language=str(_record_get(row, "language") or ""),
+            task_schema=_parse_optional_task_schema(_record_get(row, "task_schema")),
+            is_active=_record_get(row, "is_active") is True,
+        )
+
+    async def delete_assignment(self, *, assignment_public_id: str) -> bool:
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(SQL_DELETE_ASSIGNMENT_BY_PUBLIC_ID, assignment_public_id)
+            except Exception as exc:
+                if _is_foreign_key_violation(exc):
+                    raise DomainInvariantError("assignment has linked submissions and cannot be deleted") from exc
+                raise
+        return row is not None
+
     async def ensure_no_null_task_schema_rows(self) -> None:
         pool = self._pool()
         async with pool.acquire() as conn:
@@ -464,9 +534,16 @@ class PostgresWorkRepository:
         if SubmissionFieldGroup.CANDIDATE in include:
             joins.append("JOIN candidates c ON c.id = s.candidate_id")
             select_columns.append("c.public_id AS candidate_public_id")
+            select_columns.append("c.first_name AS candidate_first_name")
+            select_columns.append("c.last_name AS candidate_last_name")
             if query.candidate_public_id is not None:
                 args.append(query.candidate_public_id)
                 where_parts.append(f"c.public_id = ${len(args)}")
+            if query.candidate_query is not None:
+                args.append(f"%{query.candidate_query.strip()}%")
+                where_parts.append(
+                    f"(c.first_name ILIKE ${len(args)} OR c.last_name ILIKE ${len(args)} OR (c.first_name || ' ' || c.last_name) ILIKE ${len(args)})"
+                )
         elif query.candidate_public_id is not None:
             args.append(query.candidate_public_id)
             where_parts.append(
@@ -475,19 +552,39 @@ class PostgresWorkRepository:
                 f"WHERE c.id = s.candidate_id AND c.public_id = ${len(args)}"
                 ")"
             )
+        elif query.candidate_query is not None:
+            args.append(f"%{query.candidate_query.strip()}%")
+            where_parts.append(
+                "EXISTS ("
+                "SELECT 1 FROM candidates c "
+                f"WHERE c.id = s.candidate_id AND (c.first_name ILIKE ${len(args)} OR c.last_name ILIKE ${len(args)} OR (c.first_name || ' ' || c.last_name) ILIKE ${len(args)})"
+                ")"
+            )
 
         if SubmissionFieldGroup.ASSIGNMENT in include:
             joins.append("JOIN assignments a ON a.id = s.assignment_id")
             select_columns.append("a.public_id AS assignment_public_id")
+            select_columns.append("a.title AS assignment_title")
             if query.assignment_public_id is not None:
                 args.append(query.assignment_public_id)
                 where_parts.append(f"a.public_id = ${len(args)}")
+            if query.assignment_query is not None:
+                args.append(f"%{query.assignment_query.strip()}%")
+                where_parts.append(f"a.title ILIKE ${len(args)}")
         elif query.assignment_public_id is not None:
             args.append(query.assignment_public_id)
             where_parts.append(
                 "EXISTS ("
                 "SELECT 1 FROM assignments a "
                 f"WHERE a.id = s.assignment_id AND a.public_id = ${len(args)}"
+                ")"
+            )
+        elif query.assignment_query is not None:
+            args.append(f"%{query.assignment_query.strip()}%")
+            where_parts.append(
+                "EXISTS ("
+                "SELECT 1 FROM assignments a "
+                f"WHERE a.id = s.assignment_id AND a.title ILIKE ${len(args)}"
                 ")"
             )
 
@@ -564,6 +661,18 @@ class PostgresWorkRepository:
         if query.created_to is not None:
             args.append(query.created_to)
             where_parts.append(f"s.created_at <= ${len(args)}")
+        if query.score_min is not None:
+            args.append(query.score_min)
+            where_parts.append(
+                "COALESCE((SELECT e.score_1_10 FROM evaluations e WHERE e.submission_id = s.id ORDER BY e.updated_at DESC LIMIT 1), 0) >= "
+                f"${len(args)}"
+            )
+        if query.score_max is not None:
+            args.append(query.score_max)
+            where_parts.append(
+                "COALESCE((SELECT e.score_1_10 FROM evaluations e WHERE e.submission_id = s.id ORDER BY e.updated_at DESC LIMIT 1), 0) <= "
+                f"${len(args)}"
+            )
 
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         if query.sort_by == SubmissionSortBy.SCORE_1_10:
@@ -609,10 +718,17 @@ class PostgresWorkRepository:
                     created_at=row["core_created_at"],
                     updated_at=row["core_updated_at"],
                 ),
-                candidate=SubmissionListItem.Candidate(public_id=_as_str(row["candidate_public_id"]) or "")
+                candidate=SubmissionListItem.Candidate(
+                    public_id=_as_str(row["candidate_public_id"]) or "",
+                    first_name=_as_str(_record_get(row, "candidate_first_name")),
+                    last_name=_as_str(_record_get(row, "candidate_last_name")),
+                )
                 if SubmissionFieldGroup.CANDIDATE in include and _record_get(row, "candidate_public_id") is not None
                 else None,
-                assignment=SubmissionListItem.Assignment(public_id=_as_str(row["assignment_public_id"]) or "")
+                assignment=SubmissionListItem.Assignment(
+                    public_id=_as_str(row["assignment_public_id"]) or "",
+                    title=_as_str(_record_get(row, "assignment_title")),
+                )
                 if SubmissionFieldGroup.ASSIGNMENT in include and _record_get(row, "assignment_public_id") is not None
                 else None,
                 source=SubmissionListItem.Source(
@@ -944,6 +1060,10 @@ def _as_float(value: object | None) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _as_bool(value: object | None) -> bool:
+    return bool(value is True)
 
 
 def _json_object_or_none(value: object | None) -> dict[str, object] | None:
