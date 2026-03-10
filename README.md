@@ -1,102 +1,105 @@
 # AI Assignment Checker
 
-AI Assignment Checker — сервис для автоматизированной проверки учебных заданий.
+`AI Assignment Checker` - MVP-система для автоматической проверки тестовых заданий кандидатов в Учебный центр.
 
-Проект принимает работы кандидатов, проводит их через конвейер нормализации, LLM-оценки и доставки обратной связи, а затем формирует результаты для кандидата и организатора.
+Проект принимает работу кандидата, проводит ее через конвейер нормализации, LLM-оценки и доставки результата, а затем выдает:
 
-В репозитории уже есть инфраструктурный каркас и контракты, на которых строится продукт:
+- итоговую оценку по шкале `1-10`;
+- структурированную обратную связь для команды Учебного центра;
+- понятную и корректную обратную связь для кандидата;
+- machine-readable результат для выгрузки в таблицу;
+- payload, пригодный для доставки через Telegram-бота.
 
-- единая точка входа приложения с флагами ролей;
-- skeleton-режим запуска для API и worker-ролей;
-- fail-fast валидация роли;
-- health/readiness эндпоинты и структурированное логирование старта;
-- Docker Compose baseline с внешним one-shot migrator;
-- локальный runtime-контракт без Docker на базе `uv` и `.venv`;
-- слоистый skeleton с interface-first контрактами repositories/clients;
-- persistence-backed onboarding контракты для candidates и assignments;
-- OpenAPI/Swagger request/response контракты с типизированными Pydantic-схемами.
+## Какую задачу решает проект
 
-## Слоистая архитектура
+Система закрывает эту задачу так:
 
-- `app/api`: транспортный слой api
-- `app/services`: wiring/bootstrap зависимостей
-- `app/workers`: фоновые задачи с claim/process/finalize
-- `app/domain`: общие контракты и модели
-- `app/repositories`: asyncpg Postgres adapter + in-memory deterministic stub
-- `app/clients`: реализации клиентов
+1. принимает ответы кандидатов через API или Telegram entrypoint;
+2. приводит разнородные входные данные к единому нормализованному представлению;
+3. оценивает решение по versioned `task_schema` и критериям задания;
+4. детерминированно считает финальный балл `1-10`;
+5. формирует два разных вида фидбэка из одного evaluation result;
+6. подготавливает результаты для организаторов в CSV/табличном виде;
+7. подготавливает краткий кандидатский результат для доставки через бота.
 
-Направление зависимостей: `api/services/workers -> domain contracts`, а инфраструктура подключается в bootstrap. См. `app/ARCHITECTURE.md`.
-Точки расширения компонентов для будущей бизнес-логики перечислены в `app/COMPONENTS.md`.
+Идея MVP: проверять не только вручную выбранные работы, а все поступившие отправки, сохраняя прозрачность, воспроизводимость и пригодность результата для операционного процесса.
 
-Worker-роли в skeleton mode запускают фоновый polling loop. Каждый тик выполняет claim -> process -> finalize с no-op-safe хендлерами. По умолчанию (`INTEGRATION_MODE=stub`) зависимости детерминированно stub-овые; в `INTEGRATION_MODE=real` используются реальные интеграции по role/wiring (в том числе Telegram и S3).
+## Для кого это решение
 
-Readiness теперь включает статус worker-loop и счетчики через `/ready`:
+- команда Учебного центра: получает структурированную техничную оценку, экспорт и trace по стадиям;
+- кандидаты: получают понятную развивающую обратную связь;
+- HR и интервьюеры: получают единый и воспроизводимый формат результата для принятия решений;
+- инженерная команда: получает прозрачный pipeline с versioned контрактами, retry semantics и audit trail.
 
-- `worker_loop_enabled`
-- `worker_loop_ready`
-- `worker_metrics` (`ticks_total`, `claims_total`, `idle_ticks_total`, `errors_total`)
+## Что система выдает на выходе
 
-Synthetic in-process проверки пайплайна доступны для инфраструктурной валидации:
+Для каждой submission MVP формирует:
 
-- `POST /submissions/file` принимает файл плюс `candidate_public_id` и `assignment_public_id`, затем сохраняет артефакт `raw/`.
-- `POST /internal/test/run-pipeline` запускает цепочку normalize -> evaluate -> deliver для указанной работы.
-- `GET /submissions/{id}` возвращает текущее состояние, переходы и ссылки на артефакты для тестовых работ.
+- `score_1_10` - итоговую оценку;
+- `organizer_feedback` - сильные стороны, проблемы, рекомендации в структурированном виде;
+- `candidate_feedback` - краткое и корректное объяснение результата без токсичности;
+- `ai_assistance` - вероятностный сигнал с `likelihood`, `confidence` и disclaimer;
+- `score_breakdown` - разложение по задачам и критериям;
+- поля воспроизводимости: `chain_version`, `spec_version`, `model`, `response_language` и связанный `llm_runs` ledger.
 
-Быстрое локальное использование:
+Это делает оценку не просто числом, а объяснимым и интегрируемым результатом.
 
-1. Создайте candidate и assignment, затем загрузите файл через `POST /submissions/file`.
-2. Запустите synthetic pipeline через `POST /internal/test/run-pipeline`.
-3. Получите итоговый trace через `GET /submissions/{submission_id}`.
+## Сквозной сценарий
 
-Пример `curl` для шага 2:
+### 1. Вход кандидата
 
-```bash
-curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
-  -H "Content-Type: application/json" \
-  -d '{"submission_id":"sub_01ABCDEF0123456789ABCDEF01"}'
-```
+Есть два основных пути входа:
 
-Ожидаемые состояния:
+- прямой API ingest: кандидат и задание регистрируются через API, затем файл загружается через `POST /submissions/file`;
+- Telegram entrypoint: кандидат отправляет `/start`, бот возвращает подписанную ссылку `/candidate/apply`, а дальнейшая загрузка происходит через web/API flow.
 
-- happy path заканчивается на `delivered`;
-- fail-fast path заканчивается одним из `failed_normalization`, `failed_evaluation`, `failed_delivery`.
+Важно: `worker-ingest-telegram` в MVP не создает submissions и не пишет `raw/` артефакты сам; он только брокерит вход в web flow.
 
-Ссылки на артефакты являются внутренними storage reference (`s3://...` ), а не публичными URL для скачивания.
+### 2. Нормализация
 
-Текущий onboarding flow:
+`worker-normalize` забирает отправки в состоянии `uploaded`, читает `raw/` артефакт, извлекает или приводит содержимое к нормализованному виду и сохраняет результат в `normalized/`.
 
-- `POST /candidates` создает или переиспользует mapping идентичности кандидата.
-- `POST /assignments` создает метаданные задания.
-- `GET /assignments` возвращает список заданий (по умолчанию только активные).
-- `POST /submissions` требует `candidate_public_id` и `assignment_public_id`.
-- Telegram работает как входной брокер: `worker-ingest-telegram` обрабатывает `/start` через polling и отправляет подписанную ссылку `/candidate/apply`.
-- Инжест отправок остается API-ориентированным (`POST /submissions/file` и `POST /submissions`).
+### 3. Оценка
 
-Настройки ссылки входа через Telegram:
+`worker-evaluate` читает нормализованный артефакт, запускает rubric-driven LLM chain, валидирует строгий JSON-ответ и сохраняет:
 
-- `PUBLIC_WEB_BASE_URL` (базовый URL для подписанной apply-ссылки)
-- `TELEGRAM_LINK_SIGNING_SECRET` (HMAC-секрет для подписи токена входа)
-- `TELEGRAM_LINK_TTL_SECONDS` (время жизни токена в секундах)
+- оценку и score breakdown в `evaluations`;
+- metadata выполнения в `llm_runs`;
+- обогащенный feedback для организатора и кандидата.
 
-Операционный E2E-паттерн для Telegram интеграции:
+Финальный балл считается детерминированной пост-обработкой по `task_schema`, а не произвольным текстовым ответом модели.
 
-- Подготовка и startup-проверки (`--dry-run-startup`) выполняются до live-трафика.
-- Перед live-проверкой допускается operator-assisted checkpoint: вручную подготовить канал/бота и env.
-- После подтверждения setup выполняется проверка polling -> обработка -> outbound send и просмотр логов на ошибки.
+### 4. Доставка и экспорт
 
-Контракты публичных ID:
+`worker-deliver` подготавливает и отправляет кандидатский payload через Telegram, а API может сформировать CSV-экспорт для организаторов через `POST /exports` и `GET /exports/{export_id}/download`.
 
-- candidate: `cand_<ULID>`
-- assignment: `asg_<ULID>`
-- submission: `sub_<ULID>`
+## Архитектура MVP
 
-Внутренние первичные ключи БД остаются `BIGSERIAL`; public IDs являются внешними API-идентификаторами.
+### Контекстная схема
 
-Swagger/OpenAPI доступен по стандартным endpoint FastAPI (`/docs`, `/openapi.json`) и считается источником HTTP-контракта.
+![AI Assignment Checker Context](docs/images/architecture_context.png)
 
-Обработка dead-letter пока не реализована; `dead_letter` сейчас выступает как терминальное persistence-состояние.
+### State machine пайплайна
+
+![Submission Pipeline State Machine](docs/images/pipeline_state_machine.png)
+
+
+## Архитектурные принципы
+
+- Python 3.12 + FastAPI + worker roles с единым entrypoint `app/main.py`;
+- один runtime image, разные роли через `--role`;
+- Postgres - system of record для состояния, metadata и lineage;
+- S3-compatible storage - для `raw/`, `normalized/`, `exports/`, `eval/`;
+- stage-based pipeline: ingest -> normalize -> evaluate -> deliver;
+- строгие слойные границы: `api/services/workers -> domain contracts`;
+- воспроизводимость и auditability: versioned scoring inputs, typed contracts, `llm_runs` ledger;
+- отказоустойчивость через polling workers, lease ownership, retry и `dead_letter`.
+
+Подробные границы слоев описаны в `app/ARCHITECTURE.md`, а точки расширения - в `app/COMPONENTS.md`.
 
 ## Роли рантайма
+
+Канонический набор application roles:
 
 - `api`
 - `worker-ingest-telegram`
@@ -104,113 +107,250 @@ Swagger/OpenAPI доступен по стандартным endpoint FastAPI (`
 - `worker-evaluate`
 - `worker-deliver`
 
-`migrator` является внешним сервисом и не является app role (используется golang-migrate).
+`migrator` является отдельным внешним one-shot сервисом и не считается app role.
 
-## Переменные окружения
+## Жизненный цикл submission
 
-Используйте `.env.example` в корне репозитория как канонический шаблон переменных.
+Основные состояния в MVP:
 
-Рантайм автоматически загружает `.env` при старте, если файл существует.
-Приоритет значений: сначала `.env`, затем переменные процесса (process env) как override.
+- `uploaded`
+- `normalization_in_progress`
+- `normalized`
+- `evaluation_in_progress`
+- `evaluated`
+- `delivery_in_progress`
+- `delivered`
+- `failed_normalization`
+- `failed_evaluation`
+- `failed_delivery`
+- `dead_letter`
 
-Шаблон делит переменные на три группы:
+В Telegram entry flow дополнительно используются состояния ingest-этапа, но direct upload path стартует с `uploaded`.
 
-- уже используются рантаймом/тестами;
-- уже присутствуют в postgres-сервисе docker-compose;
-- используются рантаймом в `INTEGRATION_MODE=real` (S3, Telegram) или зарезервированы под следующие инкременты (LLM).
+Worker-паттерн одинаковый для всех stage workers:
 
-### Режим валидации runtime-конфига
+1. `claim_next(...)`
+2. `process(claim)`
+3. `link_artifact(...)` при необходимости
+4. `finalize(...)`
 
-- `RUNTIME_VALIDATION_MODE=dev` (по умолчанию): локально-дружественный режим со stub-ориентированными дефолтами.
-- `RUNTIME_VALIDATION_MODE=strict`: fail-fast проверка только критичных зависимостей рантайма для активной роли.
+Конкурентная обработка строится на `SELECT ... FOR UPDATE SKIP LOCKED`, lease metadata (`claimed_by`, `claimed_at`, `lease_expires_at`) и reclaim просроченных claim-ов.
 
-`strict` проверяет:
+## Данные и артефакты
 
-- `api`: `DATABASE_URL`
-- `worker-ingest-telegram`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
-- `worker-normalize`: `DATABASE_URL`, `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
-- `worker-evaluate`: `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`
-- `worker-deliver`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+### Postgres хранит
 
-Опционально поддерживается `TELEGRAM_BOT_API_BASE_URL` (по умолчанию `https://api.telegram.org`); если задана, должна быть валидным `http(s)` URL.
+- `candidates`, `candidate_sources`;
+- `assignments` с обязательными `language` и `task_schema`;
+- `submissions` и stage retry metadata;
+- `submission_sources` и provenance;
+- `artifacts`;
+- `evaluations`;
+- `llm_runs`;
+- `deliveries`.
 
-Опциональные/инфраструктурные переменные с валидными дефолтами не должны сами по себе валить старт.
+### S3-compatible storage хранит
 
-Скопировать пример локально:
+- `raw/` - исходные файлы кандидатов;
+- `normalized/` - нормализованные представления;
+- `exports/` - CSV для организаторов;
+- `eval/` - eval reports и metric snapshots.
+
+## Почему результат воспроизводим
+
+Проект делает акцент не только на автоматизации, но и на воспроизводимости оценки.
+
+Для каждого evaluation run сохраняются:
+
+- `chain_version`;
+- `spec_version`;
+- `provider`;
+- `model`;
+- `api_base`;
+- `response_language`;
+- `temperature`;
+- `seed` при поддержке провайдера.
+
+Финальный `score_1_10` считается детерминированно из task-level и criterion-level результатов по assignment-owned `task_schema`. Это помогает объяснить, почему поставлена именно такая оценка, и сравнивать версии scoring chain между собой.
+
+## Текущий статус MVP
+
+В репозитории уже есть рабочий архитектурный каркас и значимая часть runtime-контрактов:
+
+- единая точка входа приложения с role flags;
+- fail-fast startup validation и runtime config validation;
+- health/readiness endpoints;
+- layered architecture с interface-first контрактами;
+- worker loop с claim/process/finalize и lease heartbeat;
+- onboarding контракты для candidates и assignments;
+- typed OpenAPI/Swagger схемы;
+- synthetic in-process pipeline для инфраструктурной проверки;
+- Docker Compose baseline с внешним migrator;
+- локальный запуск через `uv` и `.venv`.
+
+Часть production-grade hardening остается следующими инкрементами: расширение conversational Telegram flow, richer eval harness, отдельный dead-letter operational flow и дальнейшее усиление quality gates.
+
+## Быстрый старт
+
+### 1. Подготовить окружение
 
 ```bash
 cp .env.example .env
-```
-
-## Локальная настройка (uv + .venv)
-
-```bash
 uv venv .venv
 uv sync --all-groups
 ```
 
-Запуск роли в пустом режиме:
+### 2. Запустить API
 
 ```bash
 uv run python -m app.main --role api
 ```
 
-Проверка старта в dry-run режиме:
+### 3. Запустить нужные worker-роли
 
 ```bash
-uv run python -m app.main --role worker-evaluate --dry-run-startup
+uv run python -m app.main --role worker-normalize
+uv run python -m app.main --role worker-evaluate
+uv run python -m app.main --role worker-deliver
 ```
 
-Параметры тюнинга worker polling (опционально):
+Для Telegram entry flow дополнительно нужен:
 
-- `WORKER_POLL_INTERVAL_MS` (по умолчанию: `200`)
-- `WORKER_IDLE_BACKOFF_MS` (по умолчанию: `1000`)
-- `WORKER_ERROR_BACKOFF_MS` (по умолчанию: `2000`)
-- `WORKER_CLAIM_LEASE_SECONDS` (по умолчанию: `30`)
-- `WORKER_HEARTBEAT_INTERVAL_MS` (по умолчанию: `10000`)
+```bash
+uv run python -m app.main --role worker-ingest-telegram
+```
 
-Запуск локальных smoke-проверок ролей:
+### 4. Быстрая smoke-проверка ролей
 
 ```bash
 make smoke-local
 ```
 
-## Контракт запуска Docker Compose
+## API и локальная проверка пайплайна
 
-Путь зависимостей в compose:
+Swagger/OpenAPI доступен по стандартным FastAPI endpoints:
 
-`postgres -> migrator -> app services`
+- `/docs`
+- `/openapi.json`
 
-Запуск prod-like стека:
+Минимальная локальная проверка synthetic pipeline:
+
+1. создать candidate через `POST /candidates`;
+2. создать assignment через `POST /assignments`;
+3. загрузить файл через `POST /submissions/file`;
+4. запустить цепочку через `POST /internal/test/run-pipeline`;
+5. получить trace через `GET /submissions/{submission_id}`.
+
+Пример запуска synthetic pipeline:
+
+```bash
+curl -sS -X POST "http://localhost:8000/internal/test/run-pipeline" \
+  -H "Content-Type: application/json" \
+  -d '{"submission_id":"sub_01ABCDEF0123456789ABCDEF01"}'
+```
+
+Ожидаемая семантика:
+
+- happy path заканчивается на `delivered`;
+- fail-fast path останавливается на первом `failed_*` состоянии.
+
+## Candidate/Admin flow
+
+- Candidate flow: `/candidate/apply` -> выбор задания и загрузка файла -> `/candidate/apply/result/{submission_id}`;
+- Admin flow: `/admin/submissions` -> фильтрация и просмотр деталей -> `Export CSV`;
+- export retrieval: `/exports/{id}/download`.
+
+## Переменные окружения
+
+Используйте `.env.example` как канонический шаблон.
+
+Рантайм автоматически загружает `.env`, если файл существует. Process env имеет приоритет над значениями из `.env`.
+
+### Режимы валидации
+
+- `RUNTIME_VALIDATION_MODE=dev` - локально-дружественный режим со stub-ориентированными дефолтами;
+- `RUNTIME_VALIDATION_MODE=strict` - fail-fast только по обязательным зависимостям активной роли.
+
+### Строгая валидация по ролям
+
+- `api`: `DATABASE_URL`
+- `worker-ingest-telegram`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+- `worker-normalize`: `DATABASE_URL`, `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`
+- `worker-evaluate`: `DATABASE_URL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`
+- `worker-deliver`: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`
+
+Дополнительно используются:
+
+- `PUBLIC_WEB_BASE_URL`
+- `TELEGRAM_LINK_SIGNING_SECRET`
+- `TELEGRAM_LINK_TTL_SECONDS`
+- `TELEGRAM_BOT_API_BASE_URL`
+
+### Тюнинг worker polling
+
+- `WORKER_POLL_INTERVAL_MS` (default `200`)
+- `WORKER_IDLE_BACKOFF_MS` (default `1000`)
+- `WORKER_ERROR_BACKOFF_MS` (default `2000`)
+- `WORKER_CLAIM_LEASE_SECONDS` (default `30`)
+- `WORKER_HEARTBEAT_INTERVAL_MS` (default `10000`)
+
+## Docker Compose
+
+Prod-like стек:
 
 ```bash
 docker compose -f docker-compose.yml up --build
 ```
 
-Запуск быстрого локального dev-режима (default compose + override):
+Быстрый локальный dev-режим:
 
 ```bash
 docker compose up --build
 ```
 
-По умолчанию поднимаются `postgres`, `migrator` и `api`.
-
-Запуск полного локального dev-режима с воркерами через профиль:
+Полный локальный dev-режим с воркерами:
 
 ```bash
 docker compose --profile full up --build
 ```
 
-Примечания:
-- `docker-compose.yml` остается prod-like (без локального mount исходников).
-- `docker-compose.override.yml` является dev-слоем (mount-ы + dev-команды).
+Порядок зависимостей в compose:
 
-## Тесты
+`postgres -> migrator -> app services`
+
+По умолчанию поднимаются `postgres`, `migrator` и `api`; остальные worker services включаются через профиль `full`.
+
+## Тесты и проверки
 
 - все тесты: `make test`
 - только unit: `make test-unit`
 - только integration: `make test-integration`
-- проверка типов: `make typecheck`
+- type checking: `make typecheck`
 
-Postgres-backed integration тесты запускаются, когда БД доступна через `TEST_DATABASE_URL` (или `DATABASE_URL`) иначе они пропускаются.
-В CI должен быть доступный Postgres, а покрытие Postgres-backed integration тестами должно считаться обязательным.
+Postgres-backed integration tests используют `TEST_DATABASE_URL` или `DATABASE_URL`; если БД недоступна, соответствующие тесты могут быть пропущены.
+
+## Структура проекта
+
+- `app/api` - HTTP transport и handler mapping;
+- `app/services` - bootstrap и wiring зависимостей;
+- `app/workers` - polling workers и stage handlers;
+- `app/domain` - доменные модели, контракты и use-cases;
+- `app/repositories` - persistence adapters;
+- `app/clients` - адаптеры внешних интеграций;
+- `db/migrations` - schema migrations;
+
+## Полезные ссылки в репозитории
+
+- `app/ARCHITECTURE.md`
+- `app/COMPONENTS.md`
+
+## Итог
+
+Этот репозиторий описывает и реализует MVP-платформу, которая переводит проверку тестовых заданий из ручного и фрагментарного процесса в воспроизводимый pipeline:
+
+- принимает работы кандидатов;
+- оценивает их по формализованным критериям;
+- выдает объяснимую оценку `1-10`;
+- формирует отдельный фидбэк для организаторов и кандидатов;
+- готовит результат для таблицы и Telegram-доставки;
+- сохраняет технический trace для аудита, отладки и последующего развития продукта.
